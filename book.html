@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#202124" id="theme-color-meta">
+    <title>Читалка — Библиотека</title>
+    <link rel="icon" href="./favicon.ico" type="image/x-icon">
+
+    <script>
+        (function() {
+            try {
+                var preset = JSON.parse(localStorage.getItem('themePreset'));
+                var colors = JSON.parse(localStorage.getItem('themeColors'));
+                if (preset) {
+                    document.documentElement.setAttribute('data-theme', preset);
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                }
+                if (colors && colors.bg) {
+                    document.documentElement.style.setProperty('--bg-color', colors.bg);
+                    document.documentElement.style.setProperty('--text-color', colors.text);
+                }
+            } catch(e) {}
+        })();
+    </script>
+
+    <link rel="stylesheet" href="./css/normalize.css">
+    <link rel="stylesheet" href="./css/fonts.css">
+    <link rel="stylesheet" href="./css/styles.css">
+    <link rel="stylesheet" href="./css/color-picker.css">
+</head>
+
+<body>
+    <aside id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+            <button id="close-sidebar" class="icon-btn" aria-label="Закрыть меню">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+            </button>
+            <h2 class="sidebar-title">Оглавление</h2>
+        </div>
+        <nav id="chapter-nav" class="chapter-list" role="navigation" aria-label="Навигация по главам"></nav>
+    </aside>
+
+    <main class="main-content">
+        <header class="toolbar">
+            <div class="toolbar-left">
+                <button id="menu-toggle" class="icon-btn" aria-label="Открыть меню">
+                    <svg id="menu-icon" width="24" height="24" viewBox="0 0 18 18" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M 1,3 H 17 M 1,9 H 17 M 1,15 h 16" />
+                    </svg>
+                </button>
+                <button id="home-button" class="icon-btn" aria-label="На главную" title="На главную">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 11.5 L12 3 L21 11.5 L18 13 L18 20 L14 20 L14 14 L10 14 L10 20 L6 20 L6 13 L3 11.5 Z" />
+                    </svg>
+                </button>
+                <div class="breadcrumb">
+                    <span id="current-chapter-title">Загрузка...</span>
+                </div>
+            </div>
+
+            <div class="toolbar-right">
+                <div class="reading-progress-container">
+                    <div class="reading-progress-indicator" id="reading-progress-bar">
+                        <div class="reading-progress-text">
+                            <span class="reading-progress-label">Прочтено: </span><span id="reading-progress-value">0%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="theme-switcher">
+                    <button id="theme-toggle" class="icon-btn theme-toggle-btn" aria-label="Переключить тему">
+                        <svg id="theme-icon" class="theme-icon-svg" width="20" height="20" viewBox="0 0 24 24" fill="none">
+                            <g id="moon-icon" class="theme-icon">
+                                <path d="M19.9001 2.30719C19.7392 1.8976 19.1616 1.8976 19.0007 2.30719L18.5703 3.40247C18.5212 3.52752 18.4226 3.62651 18.298 3.67583L17.2067 4.1078C16.7986 4.26934 16.7986 4.849 17.2067 5.01054L18.298 5.44252C18.4226 5.49184 18.5212 5.59082 18.5703 5.71587L19.0007 6.81115C19.1616 7.22074 19.7392 7.22074 19.9001 6.81116L20.3305 5.71587C20.3796 5.59082 20.4782 5.49184 20.6028 5.44252L21.6941 5.01054C22.1022 4.849 22.1022 4.26934 21.6941 4.1078L20.6028 3.67583C20.4782 3.62651 20.3796 3.52752 20.3305 3.40247L19.9001 2.30719Z" />
+                                <path d="M16.0328 8.12967C15.8718 7.72009 15.2943 7.72009 15.1333 8.12967L14.9764 8.52902C14.9273 8.65407 14.8287 8.75305 14.7041 8.80237L14.3062 8.95987C13.8981 9.12141 13.8981 9.70107 14.3062 9.86261L14.7041 10.0201C14.8287 10.0694 14.9273 10.1684 14.9764 10.2935L15.1333 10.6928C15.2943 11.1024 15.8718 11.1024 16.0328 10.6928L16.1897 10.2935C16.2388 10.1684 16.3374 10.0694 16.462 10.0201L16.8599 9.86261C17.268 9.70107 17.268 9.12141 16.8599 8.95987L16.462 8.80237C16.3374 8.75305 16.2388 8.65407 16.1897 8.52902L16.0328 8.12967Z" />
+                                <path d="M12 22C17.5228 22 22 17.5228 22 12C22 11.5373 21.3065 11.4608 21.0672 11.8568C19.9289 13.7406 17.8615 15 15.5 15C11.9101 15 9 12.0899 9 8.5C9 6.13845 10.2594 4.07105 12.1432 2.93276C12.5392 2.69347 12.4627 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" />
+                            </g>
+                            <g id="sun-icon" class="theme-icon">
+                                <path d="M17 12C17 14.7614 14.7614 17 12 17C9.23858 17 7 14.7614 7 12C7 9.23858 9.23858 7 12 7C14.7614 7 17 9.23858 17 12Z" />
+                                <path fill-rule="evenodd" clip-rule="evenodd" d="M12 1.25C12.4142 1.25 12.75 1.58579 12.75 2V4C12.75 4.41421 12.4142 4.75 12 4.75C11.5858 4.75 11.25 4.41421 11.25 4V2C11.25 1.58579 11.5858 1.25 12 1.25ZM3.66865 3.71609C3.94815 3.41039 4.42255 3.38915 4.72825 3.66865L6.95026 5.70024C7.25596 5.97974 7.2772 6.45413 6.9977 6.75983C6.7182 7.06553 6.2438 7.08677 5.9381 6.80727L3.71609 4.77569C3.41039 4.49619 3.38915 4.02179 3.66865 3.71609ZM20.3314 3.71609C20.6109 4.02179 20.5896 4.49619 20.2839 4.77569L18.0619 6.80727C17.7562 7.08677 17.2818 7.06553 17.0023 6.75983C16.7228 6.45413 16.744 5.97974 17.0497 5.70024L19.2718 3.66865C19.5775 3.38915 20.0518 3.41039 20.3314 3.71609ZM1.25 12C1.25 11.5858 1.58579 11.25 2 11.25H4C4.41421 11.25 4.75 11.5858 4.75 12C4.75 12.4142 4.41421 12.75 4 12.75H2C1.58579 12.75 1.25 12.4142 1.25 12ZM19.25 12C19.25 11.5858 19.5858 11.25 20 11.25H22C22.4142 11.25 22.75 11.5858 22.75 12C22.75 12.4142 22.4142 12.75 22 12.75H20C19.5858 12.75 19.25 12.4142 19.25 12ZM17.0255 17.0252C17.3184 16.7323 17.7933 16.7323 18.0862 17.0252L20.3082 19.2475C20.6011 19.5404 20.601 20.0153 20.3081 20.3082C20.0152 20.6011 19.5403 20.601 19.2475 20.3081L17.0255 18.0858C16.7326 17.7929 16.7326 17.3181 17.0255 17.0252ZM6.97467 17.0253C7.26756 17.3182 7.26756 17.7931 6.97467 18.086L4.75244 20.3082C4.45955 20.6011 3.98468 20.6011 3.69178 20.3082C3.39889 20.0153 3.39889 19.5404 3.69178 19.2476L5.91401 17.0253C6.2069 16.7324 6.68177 16.7324 6.97467 17.0253ZM12 19.25C12.4142 19.25 12.75 19.5858 12.75 20V22C12.75 22.4142 12.4142 22.75 12 22.75C11.5858 22.75 11.25 22.4142 11.25 22V20C11.25 19.5858 11.5858 19.25 12 19.25Z" />
+                            </g>
+                        </svg>
+                    </button>
+                </div>
+
+                <button id="settings-toggle" class="icon-btn" aria-label="Настройки">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" />
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <div class="reading-area-wrapper">
+            <div id="chapter-loading-overlay" class="chapter-loading-overlay">
+                <div class="spinner"></div>
+                <p>Загрузка главы...</p>
+            </div>
+            <article id="reading-area" class="reading-area">
+                <div id="chapter-content" class="chapter-content" role="article"></div>
+                <footer class="chapter-navigation">
+                    <button id="prev-chapter" class="nav-btn prev-btn" disabled>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z" />
+                        </svg>
+                        Начало
+                    </button>
+                    <button id="next-chapter" class="nav-btn next-btn">
+                        Следующая глава
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z" />
+                        </svg>
+                    </button>
+                </footer>
+            </article>
+        </div>
+    </main>
+
+    <div id="settings-panel" class="settings-panel" aria-hidden="true">
+        <div class="settings-header">
+            <h3>Настройки</h3>
+            <div class="mobile-theme-switcher"></div>
+            <button id="close-settings" class="icon-btn close-settings-btn" aria-label="Закрыть настройки">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+                </svg>
+            </button>
+        </div>
+
+        <div class="settings-content">
+            <div class="settings-group">
+                <h4>Шрифт</h4>
+                <div class="font-selector">
+                    <select id="font-family" class="settings-select">
+                        <option value="Lato" style="font-family: 'Lato';">Lato (по умолчанию)</option>
+                        <option value="Antiqua" style="font-family: 'Antiqua';">Antiqua</option>
+                        <option value="LiberationSans" style="font-family: 'LiberationSans';">Liberation Sans</option>
+                        <option value="LiberationSerif" style="font-family: 'LiberationSerif';">Liberation Serif</option>
+                        <option value="Roboto" style="font-family: 'Roboto';">Roboto</option>
+                        <option value="SourceCodePro" style="font-family: 'SourceCodePro';">Source Code Pro</option>
+                        <option value="Whitney" style="font-family: 'Whitney';">Whitney</option>
+                    </select>
+                </div>
+                <div class="font-size-control">
+                    <label for="font-size">Размер шрифта: <span id="font-size-value">16px</span></label>
+                    <input type="range" id="font-size" min="12" max="24" step="1" value="16" class="settings-slider">
+                </div>
+            </div>
+
+            <div class="settings-group">
+                <h4>Ширина текста</h4>
+                <div class="width-control">
+                    <label for="text-width">Ширина: <span id="text-width-value">800px</span></label>
+                    <input type="range" id="text-width" min="400" max="1200" step="50" value="800" class="settings-slider">
+                </div>
+            </div>
+
+            <div class="settings-group">
+                <h4>Цвета</h4>
+                <div class="color-controls">
+                    <div class="color-control">
+                        <label for="bg-color-picker">Фон</label>
+                        <div id="bg-color-picker" class="color-picker-btn" data-color="#ffffff">
+                            <div class="color-preview"></div>
+                        </div>
+                    </div>
+                    <div class="color-control">
+                        <label for="text-color-picker">Текст</label>
+                        <div id="text-color-picker" class="color-picker-btn" data-color="#000000">
+                            <div class="color-preview"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="theme-presets">
+                    <button class="theme-preset-btn" data-theme="light">Светлая</button>
+                    <button class="theme-preset-btn" data-theme="dark">Тёмная</button>
+                </div>
+            </div>
+
+            <div class="settings-group">
+                <h4>Межстрочный интервал</h4>
+                <div class="line-height-control">
+                    <label for="line-height">Интервал: <span id="line-height-value">1.6</span></label>
+                    <input type="range" id="line-height" min="1.2" max="2.4" step="0.1" value="1.6" class="settings-slider">
+                </div>
+                <div class="line-height-presets">
+                    <button class="line-height-preset-btn" data-value="1.4">Плотный</button>
+                    <button class="line-height-preset-btn" data-value="1.6">Стандарт</button>
+                    <button class="line-height-preset-btn" data-value="1.8">Просторный</button>
+                    <button class="line-height-preset-btn" data-value="2.0">Воздушный</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="overlay" class="overlay" aria-hidden="true"></div>
+    <div id="age-gate-modal" class="age-gate-modal" style="display: none;">
+        <div class="age-gate-content">
+            <h2>Предупреждение о возрасте</h2>
+            <p>
+                Этот сайт содержит контент, предназначенный исключительно для лиц, достигших 18 лет.
+                Входя на этот сайт, вы подтверждаете, что вам уже есть 18 лет и вы согласны с тем, что будете
+                использовать этот сайт на свой страх и риск.
+                Владелец сайта не несёт ответственности за любой ущерб, который может возникнуть в результате
+                использования этого сайта несовершеннолетними лицами.
+            </p>
+            <p>
+                Если вам ещё нет 18 лет, пожалуйста, покиньте этот сайт.
+            </p>
+            <div class="age-gate-buttons">
+                <button id="age-gate-accept" class="age-gate-btn accept-btn">Мне уже есть 18 лет</button>
+                <button id="age-gate-decline" class="age-gate-btn decline-btn">Мне ещё нет 18 лет</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="bottom-bar" class="bottom-bar" aria-hidden="true"></div>
+    <script type="module" src="./js/app.js"></script>
+</body>
+
+</html>

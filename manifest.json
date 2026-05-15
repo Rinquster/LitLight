@@ -1,0 +1,11 @@
+{
+  "start_url": "./index.html",
+  "shortcuts": [
+    {
+      "name": "Библиотека",
+      "short_name": "Книги",
+      "description": "Перейти к списку книг",
+      "url": "./index.html"
+    }
+  ]
+}
