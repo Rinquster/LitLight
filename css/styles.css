@@ -1059,6 +1059,7 @@ pre code {
   .breadcrumb { max-width: 150px; display: none; }
   .chapter-navigation { flex-direction: column; gap: 0.5rem; padding-bottom: 5rem; }
   .reading-progress-container { width: 100px; }
+  .reading-progress-label { display: none; }
   .theme-switcher { display: none !important; }
   .mobile-theme-switcher { display: flex; }
   .bottom-bar { display: block; }
