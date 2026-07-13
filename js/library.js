@@ -15,6 +15,8 @@ class LibraryApp {
     this.loadingOverlay = document.getElementById("loading-overlay");
     this.ageGateModal = null;
     this.ageConfirmed = false;
+    this.CATALOG_CACHE_KEY = "booksCatalogCache";
+    this.handleBooksGridClick = this.handleBooksGridClick.bind(this);
   }
 
   async init() {
@@ -23,6 +25,7 @@ class LibraryApp {
     this.themeManager = new ThemeManager();
 
     this.checkAgeConfirmation();
+    this.setupEventListeners();
 
     try {
       await this.scanBooks();
@@ -79,21 +82,29 @@ class LibraryApp {
         "использовать этот сайт на свой страх и риск.\n" +
         "Владелец сайта не несёт ответственности за любой ущерб, который может возникнуть в результате\n" +
         "использования этого сайта несовершеннолетними лицами.";
+    const modalTitle = message
+      ? "Требуется подтверждение"
+      : "Предупреждение о возрасте";
+    const modalBody = Utils.escapeHtml(modalMessage).replace(/\n/g, "<br>");
+    const declineText = message ? "Закрыть" : "Мне ещё нет 18 лет";
+    const underageText = !message
+      ? "<p>Если вам ещё нет 18 лет, пожалуйста, покиньте этот сайт.</p>"
+      : "";
 
     const modal = document.createElement("div");
     modal.id = "age-gate-modal";
     modal.className = "age-gate-modal";
     modal.innerHTML = `
       <div class="age-gate-content">
-        <h2>${message ? "Требуется подтверждение" : "Предупреждение о возрасте"}</h2>
-        <p>${modalMessage.replace(/\n/g, "<br>")}</p>
-        ${!message ? "<p>Если вам ещё нет 18 лет, пожалуйста, покиньте этот сайт.</p>" : ""}
+        <h2>${modalTitle}</h2>
+        <p>${modalBody}</p>
+        ${underageText}
         <div class="age-gate-buttons">
           <button id="age-gate-accept" class="age-gate-btn accept-btn">
             Мне уже есть 18 лет
           </button>
           <button id="age-gate-decline" class="age-gate-btn decline-btn">
-            ${message ? "Закрыть" : "Мне ещё нет 18 лет"}
+            ${declineText}
           </button>
         </div>
       </div>
@@ -154,53 +165,21 @@ class LibraryApp {
       }
 
       const indexData = await indexResponse.json();
-      const candidateBooks = indexData.books || [];
+      const candidateBooks = this.normalizeBookIds(indexData.books || []);
+      const catalogVersion = indexData.lastUpdated || null;
 
       console.log(`📋 Found book list from index:`, candidateBooks);
 
-      const books = [];
-
-      for (const bookId of candidateBooks) {
-        try {
-          const infoPath = `./books/${bookId}/info.json`;
-          console.log(`🔍 Checking: ${infoPath}`);
-
-          const response = await fetch(infoPath);
-
-          if (response.ok) {
-            const info = await response.json();
-            console.log(`✅ Found book: ${info.title} (id: ${bookId})`);
-
-            let hasPreface = false;
-            try {
-              const prefaceResponse = await fetch(
-                `./books/${bookId}/chapters/00.html`,
-                {
-                  method: "HEAD",
-                },
-              );
-              hasPreface = prefaceResponse.ok;
-            } catch {
-              hasPreface = false;
-            }
-
-            books.push({
-              id: bookId,
-              ...info,
-              coverUrl: `./books/${bookId}/${info.cover || ""}`,
-              ageRating: info.ageRating || 0,
-              tags: info.tags || [],
-              hasPreface: hasPreface,
-              writtenDate: info.writtenDate || null,
-              finished: info.finished || false,
-            });
-          }
-        } catch (error) {
-          console.warn(`⚠️ Error loading book ${bookId}:`, error);
-        }
+      const cachedBooks = this.loadCatalogCache(catalogVersion, candidateBooks);
+      if (cachedBooks) {
+        this.books = cachedBooks;
+        console.log(`⚡ Loaded ${this.books.length} books from catalog cache`);
+        this.refreshBooksInBackground(candidateBooks, catalogVersion);
+        return;
       }
 
-      this.books = books;
+      this.books = await this.loadBooksMetadata(candidateBooks);
+      this.saveCatalogCache(catalogVersion, candidateBooks, this.books);
       console.log(
         "📚 Final books list:",
         this.books.map((b) => ({
@@ -215,6 +194,150 @@ class LibraryApp {
     } catch (error) {
       console.error("❌ Failed to load books index:", error);
       this.books = [];
+    }
+  }
+
+  normalizeBookIds(entries) {
+    return entries
+      .map((entry) => (typeof entry === "string" ? entry : entry?.id))
+      .filter(Boolean);
+  }
+
+  async loadBooksMetadata(bookIds) {
+    const books = await Promise.all(
+      bookIds.map((bookId) => this.loadBookMetadata(bookId)),
+    );
+
+    return books.filter(Boolean);
+  }
+
+  async loadBookMetadata(bookId) {
+    try {
+      const infoPath = `./books/${bookId}/info.json`;
+      console.log(`🔍 Checking: ${infoPath}`);
+
+      const response = await fetch(infoPath);
+
+      if (!response.ok) {
+        console.warn(`⚠️ Book info not found for ${bookId}`);
+        return null;
+      }
+
+      const info = await response.json();
+      console.log(`✅ Found book: ${info.title} (id: ${bookId})`);
+
+      return {
+        id: bookId,
+        ...info,
+        coverUrl: `./books/${bookId}/${info.cover || ""}`,
+        ageRating: info.ageRating || 0,
+        tags: info.tags || [],
+        hasPreface: Boolean(info.hasPreface),
+        writtenDate: info.writtenDate || null,
+        finished: Boolean(info.finished),
+      };
+    } catch (error) {
+      console.warn(`⚠️ Error loading book ${bookId}:`, error);
+      return null;
+    }
+  }
+
+  loadCatalogCache(catalogVersion, bookIds) {
+    const cache = Utils.loadFromStorage(this.CATALOG_CACHE_KEY, null);
+    if (!cache || !Array.isArray(cache.books)) return null;
+    if (cache.catalogVersion !== catalogVersion) return null;
+    if (!this.haveSameBookIds(cache.bookIds, bookIds)) return null;
+    return cache.books;
+  }
+
+  saveCatalogCache(catalogVersion, bookIds, books) {
+    Utils.saveToStorage(this.CATALOG_CACHE_KEY, {
+      catalogVersion,
+      bookIds,
+      books,
+      timestamp: Date.now(),
+    });
+  }
+
+  haveSameBookIds(left = [], right = []) {
+    if (left.length !== right.length) return false;
+    return left.every((bookId, index) => bookId === right[index]);
+  }
+
+  refreshBooksInBackground(bookIds, catalogVersion) {
+    this.loadBooksMetadata(bookIds)
+      .then((books) => {
+        if (books.length === 0) return;
+
+        const previous = JSON.stringify(this.books);
+        const next = JSON.stringify(books);
+        this.saveCatalogCache(catalogVersion, bookIds, books);
+
+        if (previous !== next) {
+          this.books = books;
+          this.render();
+        }
+      })
+      .catch((error) => {
+        console.warn("⚠️ Background catalog refresh failed:", error);
+      });
+  }
+
+  setupEventListeners() {
+    if (!this.booksGrid) return;
+    this.booksGrid.addEventListener("click", this.handleBooksGridClick);
+  }
+
+  handleBooksGridClick(event) {
+    const clickableElement = event.target.closest(
+      ".book-cover-wrapper, .book-title",
+    );
+
+    if (!clickableElement || !this.booksGrid.contains(clickableElement)) {
+      return;
+    }
+
+    event.stopPropagation();
+
+    const bookCard = clickableElement.closest(".book-card");
+    if (!bookCard) return;
+
+    const bookId = bookCard.dataset.bookId;
+    const ageRating = parseInt(bookCard.dataset.ageRating, 10) || 0;
+
+    console.log(
+      "🔍 CLICK DETECTED! bookId:",
+      bookId,
+      "ageRating:",
+      ageRating,
+    );
+
+    if (!bookId) {
+      console.error("❌ No bookId found!");
+      return;
+    }
+
+    if (ageRating >= 18 && !this.ageConfirmed) {
+      const title =
+        bookCard.querySelector(".book-title")?.textContent || "этой книге";
+      const message = `Для доступа к книге "${title}" необходимо подтвердить, что вам есть 18 лет.`;
+      this.createAgeGateModal(message);
+      return;
+    }
+
+    this.rememberSelectedBook(bookId);
+
+    const url = `./book.html?id=${encodeURIComponent(bookId)}`;
+    console.log("🔗 Redirecting to:", url);
+
+    window.location.href = url;
+  }
+
+  rememberSelectedBook(bookId) {
+    try {
+      sessionStorage.setItem("lastSelectedBookId", bookId);
+    } catch (error) {
+      console.warn("Failed to remember selected book:", error);
     }
   }
 
@@ -233,61 +356,12 @@ class LibraryApp {
     }
 
     let html = "";
-    this.books.forEach((book) => {
+    this.books.forEach((book, index) => {
       console.log("📚 Processing book:", book);
-      html += this.createBookCard(book);
+      html += this.createBookCard(book, index);
     });
 
     this.booksGrid.innerHTML = html;
-
-    const cards = this.booksGrid.querySelectorAll(".book-card");
-    console.log(`🔍 Found ${cards.length} cards in DOM`);
-
-    cards.forEach((card) => {
-      const clickableElements = card.querySelectorAll(
-        ".book-cover-wrapper, .book-title",
-      );
-
-      clickableElements.forEach((element) => {
-        element.addEventListener(
-          "click",
-          function (event) {
-            event.stopPropagation();
-
-            const bookCard = element.closest(".book-card");
-            const bookId = bookCard.dataset.bookId;
-            const hasPreface = bookCard.dataset.hasPreface === "true";
-            const ageRating = parseInt(bookCard.dataset.ageRating) || 0;
-
-            console.log(
-              "🔍 CLICK DETECTED! bookId:",
-              bookId,
-              "ageRating:",
-              ageRating,
-            );
-
-            if (!bookId) {
-              console.error("❌ No bookId found!");
-              return;
-            }
-
-            if (ageRating >= 18 && !this.ageConfirmed) {
-              const title =
-                bookCard.querySelector(".book-title")?.textContent ||
-                "этой книге";
-              const message = `Для доступа к книге "${title}" необходимо подтвердить, что вам есть 18 лет.`;
-              this.createAgeGateModal(message);
-              return;
-            }
-
-            const url = `./book?id=${encodeURIComponent(bookId)}`;
-            console.log("🔗 Redirecting to:", url);
-
-            window.location.href = url;
-          }.bind(this),
-        );
-      });
-    });
   }
 
   getTagIcon() {
@@ -323,27 +397,38 @@ class LibraryApp {
     }
   }
 
-  createBookCard(book) {
+  createBookCard(book, index = 0) {
     console.log("📚 Creating card for:", book.id, book.title);
 
+    const title = book.title || "Без названия";
+    const safeId = Utils.escapeHtml(book.id);
+    const safeTitle = Utils.escapeHtml(title);
+    const safeCoverUrl = Utils.escapeHtml(book.coverUrl || "");
+    const safeAuthor = Utils.escapeHtml(book.author || "Автор неизвестен");
+    const safeDescription = Utils.escapeHtml(book.description || "");
+    const ageRating = parseInt(book.ageRating, 10) || 0;
+    const totalChapters = parseInt(book.totalChapters, 10) || 0;
+    const coverLoading = index < 2 ? "eager" : "lazy";
+    const coverFetchPriority = index < 2 ? "high" : "auto";
+    const fallbackCover = this.createFallbackCoverDataUrl(title);
+
     const coverHtml = book.cover
-      ? `<img src="${book.coverUrl}" alt="${book.title}" class="book-cover" 
-              onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22200%22%20height%3D%22300%22%20viewBox%3D%220%200%20200%20300%22%3E%3Crect%20width%3D%22200%22%20height%3D%22300%22%20fill%3D%22%23cccccc%22%2F%3E%3Ctext%20x%3D%2250%25%22%20y%3D%2250%25%22%20dominant-baseline%3D%22middle%22%20text-anchor%3D%22middle%22%20font-size%3D%2224%22%20fill%3D%22%23666666%22%3E${book.title.charAt(0)}%3C%2Ftext%3E%3C%2Fsvg%3E';">`
-      : `<div class="book-cover-placeholder">${book.title.charAt(0)}</div>`;
+      ? `<img src="${safeCoverUrl}" alt="${safeTitle}" class="book-cover" loading="${coverLoading}" decoding="async" fetchpriority="${coverFetchPriority}" onerror="this.onerror=null; this.src='${fallbackCover}';">`
+      : `<div class="book-cover-placeholder">${Utils.escapeHtml(title.charAt(0) || "?")}</div>`;
 
     const ageBadgeClass =
-      book.ageRating >= 18
+      ageRating >= 18
         ? "age-18"
-        : book.ageRating > 0
-          ? `age-${book.ageRating}`
+        : ageRating > 0
+          ? `age-${ageRating}`
           : "";
 
     const ageBadge =
-      book.ageRating > 0
-        ? `<span class="age-badge ${ageBadgeClass}">${book.ageRating}+</span>`
+      ageRating > 0
+        ? `<span class="age-badge ${ageBadgeClass}">${ageRating}+</span>`
         : "";
 
-    const isBlocked = book.ageRating >= 18 && !this.ageConfirmed;
+    const isBlocked = ageRating >= 18 && !this.ageConfirmed;
     const cardClass = isBlocked ? "book-card blocked" : "book-card";
 
     const tagsHtml =
@@ -358,7 +443,7 @@ class LibraryApp {
 
     const formattedDate = this.formatDate(book.writtenDate);
     const dateHtml = formattedDate
-      ? `<span class="book-date" title="Дата написания">📅 ${formattedDate}</span>`
+      ? `<span class="book-date" title="Дата написания">📅 ${Utils.escapeHtml(formattedDate)}</span>`
       : "";
 
     const statusHtml = this.getStatusHtml(book);
@@ -367,22 +452,22 @@ class LibraryApp {
       : "";
 
     return `
-        <div class="${cardClass}" data-book-id="${book.id}" data-age-rating="${book.ageRating || 0}" data-has-preface="${book.hasPreface || false}">
+        <div class="${cardClass}" data-book-id="${safeId}" data-age-rating="${ageRating}" data-has-preface="${Boolean(book.hasPreface)}">
             <div class="book-cover-wrapper">
                 ${coverHtml}
             </div>
             <div class="book-info">
                 ${ageBadge}
-                <h2 class="book-title">${Utils.escapeHtml(book.title)}</h2>
-                <p class="book-author">${Utils.escapeHtml(book.author || "Автор неизвестен")}</p>
-                <p class="book-description">${Utils.escapeHtml(book.description || "")}</p>
+                <h2 class="book-title">${safeTitle}</h2>
+                <p class="book-author">${safeAuthor}</p>
+                <p class="book-description">${safeDescription}</p>
                 
                 ${tagsHtml}
                 
                 <div class="book-meta">
                     ${statusHtml}
                     ${dateHtml}
-                    <span>📖 ${book.totalChapters || "?"} ${this.pluralizeChapters(book.totalChapters)}</span>
+                    <span>📖 ${totalChapters || "?"} ${this.pluralizeChapters(totalChapters)}</span>
                     ${book.hasMedia ? "<span>🎵 аудио</span>" : ""}
                     ${book.hasHints ? "<span>💡 подсказки</span>" : ""}
                 </div>
@@ -390,6 +475,18 @@ class LibraryApp {
             </div>
         </div>
     `;
+  }
+
+  createFallbackCoverDataUrl(title) {
+    const firstLetter = (title || "?").charAt(0) || "?";
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="200" height="300" viewBox="0 0 200 300">
+        <rect width="200" height="300" fill="#cccccc"/>
+        <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-size="24" fill="#666666">${Utils.escapeHtml(firstLetter)}</text>
+      </svg>
+    `;
+
+    return `data:image/svg+xml,${encodeURIComponent(svg)}`;
   }
 
   pluralizeChapters(count) {

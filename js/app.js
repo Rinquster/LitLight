@@ -5,7 +5,6 @@ import ThemeManager from "./theme-manager.js";
 import SettingsManager from "./settings-manager.js";
 import BookLoader from "./book-loader.js";
 import MediaInjector from "./media-injector.js";
-import CustomColorPicker from "./color-picker.js";
 import ReadingProgressTracker from "./reading-progress-tracker.js";
 
 class ReadingApp {
@@ -20,6 +19,7 @@ class ReadingApp {
     this.requestedChapter = 1;
     this.initStarted = false;
     this.isChapterLoading = false;
+    this.chapterLoadToken = 0;
   }
 
   showChapterLoadingOverlay() {
@@ -99,14 +99,20 @@ class ReadingApp {
       chapterParam !== null ? parseInt(chapterParam) : null;
 
     if (!this.bookId) {
-      const pathParts = window.location.pathname.split("/");
-      if (pathParts.length >= 3 && pathParts[1] === "book") {
-        this.bookId = pathParts[2];
+      const pathParts = window.location.pathname.split("/").filter(Boolean);
+      const bookSegmentIndex = pathParts.indexOf("book");
+      if (bookSegmentIndex !== -1 && pathParts[bookSegmentIndex + 1]) {
+        this.bookId = decodeURIComponent(pathParts[bookSegmentIndex + 1]);
       }
     }
 
     if (!this.bookId) {
-      this.bookId = "mondschein";
+      this.bookId = await this.getRememberedBookId();
+    }
+
+    if (!this.bookId) {
+      window.location.replace("./index.html");
+      return;
     }
 
     console.log(
@@ -147,13 +153,46 @@ class ReadingApp {
     await this.continueInitialization();
   }
 
+  async getRememberedBookId() {
+    let rememberedBookId = null;
+
+    try {
+      rememberedBookId = sessionStorage.getItem("lastSelectedBookId");
+    } catch (error) {
+      console.warn("Failed to read remembered book:", error);
+    }
+
+    if (!rememberedBookId) return null;
+
+    try {
+      const response = await fetch("./books/index.json");
+      if (!response.ok) return null;
+
+      const indexData = await response.json();
+      const bookIds = (indexData.books || [])
+        .map((entry) => (typeof entry === "string" ? entry : entry?.id))
+        .filter(Boolean);
+
+      return bookIds.includes(rememberedBookId) ? rememberedBookId : null;
+    } catch (error) {
+      console.warn("Failed to validate remembered book:", error);
+      return null;
+    }
+  }
+
   resolveStartChapter(requestedChapter) {
     requestedChapter = parseInt(requestedChapter);
 
+    const hasPreface = this.bookLoader?.chapterFiles.some(
+      (c) => c.number === 0,
+    );
+    const defaultChapter = hasPreface ? 0 : 1;
+
+    if (!Number.isFinite(requestedChapter) || requestedChapter < 0) {
+      return defaultChapter;
+    }
+
     if (requestedChapter === 0) {
-      const hasPreface = this.bookLoader?.chapterFiles.some(
-        (c) => c.number === 0,
-      );
       return hasPreface ? 0 : 1;
     }
 
@@ -178,6 +217,7 @@ class ReadingApp {
 
       this.progressTracker = new ReadingProgressTracker();
       this.progressTracker.init(this.bookId);
+      window.readingApp = this;
 
       this.bookLoader = new BookLoader();
       const bookLoaded = await this.bookLoader.init(this.bookId);
@@ -197,7 +237,9 @@ class ReadingApp {
       const chapterToOpen = await this.determineStartChapter();
 
       console.log(`📖 Loading initial chapter: ${chapterToOpen.chapter} (scroll: ${chapterToOpen.scrollPercent}%)`);
-      await this.goToChapter(chapterToOpen.chapter);
+      await this.goToChapter(chapterToOpen.chapter, {
+        updateProgress: chapterToOpen.scrollPercent <= 0,
+      });
 
       if (chapterToOpen.scrollPercent > 0) {
         this.scrollToPercent(chapterToOpen.scrollPercent);
@@ -207,7 +249,6 @@ class ReadingApp {
 
       this.isInitialized = true;
       console.log("✅ Reading App fully initialized!");
-      window.readingApp = this;
     } catch (error) {
       console.error("❌ Failed to initialize app:", error);
       this.showErrorState(error);
@@ -248,13 +289,15 @@ class ReadingApp {
 
       console.log(`🔄 Resume modal result: action=${result.action}, chapter=${result.chapter}, scroll=${result.scrollPercent}%`);
 
+      const resolvedChapter = this.resolveStartChapter(result.chapter);
+
       if (result.action === "continue") {
         return {
-          chapter: result.chapter,
+          chapter: resolvedChapter,
           scrollPercent: result.scrollPercent,
         };
       } else {
-        return { chapter: result.chapter, scrollPercent: 0 };
+        return { chapter: resolvedChapter, scrollPercent: 0 };
       }
     }
 
@@ -268,81 +311,97 @@ class ReadingApp {
     if (!readingArea) return;
 
     setTimeout(() => {
+      const safePercent = Utils.clamp(parseFloat(percent) || 0, 0, 100);
       const scrollHeight = readingArea.scrollHeight;
       const clientHeight = readingArea.clientHeight;
       const maxScroll = scrollHeight - clientHeight;
-      const targetScroll = (percent / 100) * maxScroll;
+      if (maxScroll <= 0) return;
+      const targetScroll = (safePercent / 100) * maxScroll;
 
       readingArea.scrollTo({
         top: targetScroll,
-        behavior: "instant",
+        behavior: "auto",
       });
 
-      console.log(`📍 Scrolled to ${percent}% (${Math.round(targetScroll)}px)`);
+      console.log(`📍 Scrolled to ${safePercent}% (${Math.round(targetScroll)}px)`);
     }, 100);
   }
 
-  async goToChapter(chapterNumber) {
+  async goToChapter(chapterNumber, options = {}) {
     if (!this.bookLoader) return;
 
+    const loadToken = ++this.chapterLoadToken;
     this.showChapterLoadingOverlay();
 
-    chapterNumber = parseInt(chapterNumber);
+    try {
+      chapterNumber = parseInt(chapterNumber);
 
-    // Проверка существования главы, если нет – переход на ближайшую существующую
-    const chapterExists = this.bookLoader.chapterFiles.some(
-      (c) => c.number === chapterNumber,
-    );
-
-    if (!chapterExists) {
-      if (chapterNumber === 0) {
-        chapterNumber = 1;
-      } else {
-        const availableChapters = this.bookLoader.chapterFiles.map(
-          (c) => c.number,
-        );
-        chapterNumber = Math.max(...availableChapters);
-      }
-    }
-
-    // Обновляем URL
-    const url = new URL(window.location);
-    url.searchParams.set("id", this.bookId);
-    url.searchParams.set("chapter", chapterNumber);
-    window.history.replaceState({}, "", url);
-
-    console.log(`📥 Loading HTML for chapter ${chapterNumber}`);
-    let html = await this.bookLoader.loadChapter(chapterNumber);
-
-    if (chapterNumber > 0 && this.mediaInjector) {
-      const mediaRules = this.bookLoader.getMediaRulesForChapter(chapterNumber);
-      this.mediaInjector.setBookRules(mediaRules);
-      html = await this.mediaInjector.injectMedia(html, chapterNumber);
-    }
-
-    const contentElement = document.getElementById("chapter-content");
-    if (contentElement) {
-      contentElement.innerHTML = html;
-
-      if (this.mediaInjector && chapterNumber > 0) {
-        this.mediaInjector.postProcessInsteadMedia(contentElement);
+      if (!Number.isFinite(chapterNumber)) {
+        chapterNumber = this.bookLoader.chapterFiles[0]?.number ?? 1;
       }
 
-      this.centerSpecialElements();
+      // Проверка существования главы, если нет – переход на ближайшую существующую
+      const chapterExists = this.bookLoader.chapterFiles.some(
+        (c) => c.number === chapterNumber,
+      );
 
-      this.bookLoader.currentChapter = chapterNumber;
-      this.bookLoader.updateNavigationUI();
+      if (!chapterExists) {
+        if (chapterNumber === 0) {
+          chapterNumber = this.bookLoader.chapterFiles[0]?.number ?? 1;
+        } else {
+          const availableChapters = this.bookLoader.chapterFiles.map(
+            (c) => c.number,
+          );
+          chapterNumber = Math.max(...availableChapters);
+        }
+      }
 
-      document.querySelector(".reading-area")?.scrollTo(0, 0);
+      // Обновляем URL
+      const url = new URL(window.location);
+      url.searchParams.set("id", this.bookId);
+      url.searchParams.set("chapter", chapterNumber);
+      window.history.replaceState({}, "", url);
 
-      this.setupParagraphHighlighting();
+      console.log(`📥 Loading HTML for chapter ${chapterNumber}`);
+      let html = await this.bookLoader.loadChapter(chapterNumber);
 
-      if (this.progressTracker) {
-        this.progressTracker.updateProgress(chapterNumber, 0);
+      if (loadToken !== this.chapterLoadToken) return;
+
+      if (chapterNumber > 0 && this.mediaInjector) {
+        const mediaRules = this.bookLoader.getMediaRulesForChapter(chapterNumber);
+        this.mediaInjector.setBookRules(mediaRules);
+        html = await this.mediaInjector.injectMedia(html, chapterNumber);
+      }
+
+      if (loadToken !== this.chapterLoadToken) return;
+
+      const contentElement = document.getElementById("chapter-content");
+      if (contentElement) {
+        contentElement.innerHTML = html;
+
+        if (this.mediaInjector && chapterNumber > 0) {
+          this.mediaInjector.postProcessInsteadMedia(contentElement);
+        }
+
+        this.centerSpecialElements();
+
+        this.bookLoader.currentChapter = chapterNumber;
+        this.bookLoader.updateNavigationUI();
+
+        document.querySelector(".reading-area")?.scrollTo(0, 0);
+
+        this.setupParagraphHighlighting();
+        this.setupChapterActionHandlers();
+
+        if (this.progressTracker && options.updateProgress !== false) {
+          this.progressTracker.updateProgress(chapterNumber, 0);
+        }
+      }
+    } finally {
+      if (loadToken === this.chapterLoadToken) {
+        this.hideChapterLoadingOverlay();
       }
     }
-
-    this.hideChapterLoadingOverlay();
   }
 
   setupParagraphHighlighting() {
@@ -450,6 +509,7 @@ class ReadingApp {
       menuToggle.addEventListener("click", () => {
         sidebar.classList.add("open");
         if (overlay) overlay.classList.add("visible");
+        this.bookLoader?.ensureChapterTitlesLoaded?.();
       });
     }
 
@@ -479,6 +539,24 @@ class ReadingApp {
         window.location.href = "./index.html";
       });
     }
+  }
+
+  setupChapterActionHandlers() {
+    const contentElement = document.getElementById("chapter-content");
+    if (!contentElement) return;
+
+    contentElement.querySelectorAll("[data-reader-action]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const action = button.dataset.readerAction;
+
+        if (action === "go-first") {
+          const firstChapter = this.bookLoader?.chapterFiles[0]?.number ?? 1;
+          this.goToChapter(firstChapter);
+        } else if (action === "reload") {
+          location.reload();
+        }
+      });
+    });
   }
 
   setupScrollProgressIndicator() {
@@ -514,25 +592,52 @@ class ReadingApp {
     const contentElement = document.getElementById("chapter-content");
     if (!contentElement) return;
 
-    contentElement.innerHTML = `
-            <div class="error-chapter">
-                <h1 class="chapter-title">Ошибка запуска приложения</h1>
-                <p class="chapter-meta">${error.message || "Неизвестная ошибка"}</p>
-                <div class="error-content">
-                    <p>Приложение не смогло запуститься. Попробуйте:</p>
-                    <div class="error-actions">
-                        <button onclick="location.reload()" class="error-btn">Обновить страницу</button>
-                        <button onclick="localStorage.clear(); location.reload()" class="error-btn">Очистить данные и обновить</button>
-                    </div>
-                    <div class="error-details" style="margin-top: 1rem; font-size: 0.8rem; color: #666;">
-                        <details>
-                            <summary>Детали ошибки</summary>
-                            <pre style="text-align: left; margin-top: 0.5rem;">${error.stack || error.toString()}</pre>
-                        </details>
-                    </div>
-                </div>
-            </div>
-        `;
+    const errorChapter = Utils.createElement("div", "error-chapter");
+
+    const title = Utils.createElement("h1", "chapter-title");
+    title.textContent = "Ошибка запуска приложения";
+
+    const meta = Utils.createElement("p", "chapter-meta");
+    meta.textContent = error.message || "Неизвестная ошибка";
+
+    const content = Utils.createElement("div", "error-content");
+    const hint = document.createElement("p");
+    hint.textContent = "Приложение не смогло запуститься. Попробуйте:";
+
+    const actions = Utils.createElement("div", "error-actions");
+    const reloadButton = Utils.createElement("button", "error-btn");
+    reloadButton.type = "button";
+    reloadButton.textContent = "Обновить страницу";
+    reloadButton.addEventListener("click", () => location.reload());
+
+    const clearButton = Utils.createElement("button", "error-btn");
+    clearButton.type = "button";
+    clearButton.textContent = "Очистить данные и обновить";
+    clearButton.addEventListener("click", () => {
+      localStorage.clear();
+      location.reload();
+    });
+
+    actions.append(reloadButton, clearButton);
+
+    const detailsWrapper = Utils.createElement("div", "error-details");
+    detailsWrapper.style.marginTop = "1rem";
+    detailsWrapper.style.fontSize = "0.8rem";
+    detailsWrapper.style.color = "#666";
+
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Детали ошибки";
+    const pre = document.createElement("pre");
+    pre.style.textAlign = "left";
+    pre.style.marginTop = "0.5rem";
+    pre.textContent = error.stack || error.toString();
+
+    details.append(summary, pre);
+    detailsWrapper.appendChild(details);
+    content.append(hint, actions, detailsWrapper);
+    errorChapter.append(title, meta, content);
+    contentElement.replaceChildren(errorChapter);
   }
 
   cleanup() {

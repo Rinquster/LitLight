@@ -8,6 +8,10 @@ class ReadingProgressTracker {
     this.progressData = {};
     this.currentBookId = null;
     this.saveDebounced = Utils.debounce(() => this.saveProgress(), 1000);
+    this._scrollHandler = null;
+    this._visibilityHandler = null;
+    this._beforeUnloadHandler = null;
+    this._readingArea = null;
   }
 
   init(bookId) {
@@ -31,9 +35,18 @@ class ReadingProgressTracker {
 
   updateProgress(chapterNumber, scrollPercent) {
     if (!this.currentBookId) return;
+    const safeChapter = parseInt(chapterNumber, 10);
+    const safeScrollPercent = Utils.clamp(
+      parseFloat(scrollPercent) || 0,
+      0,
+      100,
+    );
+
+    if (!Number.isFinite(safeChapter)) return;
+
     this.progressData[this.currentBookId] = {
-      chapter: chapterNumber,
-      scrollPercent: Math.round(scrollPercent),
+      chapter: safeChapter,
+      scrollPercent: Math.round(safeScrollPercent),
       timestamp: Date.now(),
     };
     this.saveDebounced();
@@ -80,22 +93,37 @@ class ReadingProgressTracker {
     }, 500);
 
     readingArea.addEventListener("scroll", this._scrollHandler);
+    this._readingArea = readingArea;
     console.log("📊 Scroll tracking started");
 
     // Сохраняем прогресс при скрытии вкладки и перед закрытием
-    window.addEventListener("visibilitychange", () => {
+    this._visibilityHandler = () => {
       if (document.hidden) this.saveProgressNow();
-    });
-    window.addEventListener("beforeunload", () => this.saveProgressNow());
+    };
+    this._beforeUnloadHandler = () => this.saveProgressNow();
+
+    window.addEventListener("visibilitychange", this._visibilityHandler);
+    window.addEventListener("beforeunload", this._beforeUnloadHandler);
   }
 
   stopTracking() {
     if (this._scrollHandler) {
-      const readingArea = document.querySelector(".reading-area");
+      const readingArea = this._readingArea || document.querySelector(".reading-area");
       if (readingArea) {
         readingArea.removeEventListener("scroll", this._scrollHandler);
       }
       this._scrollHandler = null;
+      this._readingArea = null;
+    }
+
+    if (this._visibilityHandler) {
+      window.removeEventListener("visibilitychange", this._visibilityHandler);
+      this._visibilityHandler = null;
+    }
+
+    if (this._beforeUnloadHandler) {
+      window.removeEventListener("beforeunload", this._beforeUnloadHandler);
+      this._beforeUnloadHandler = null;
     }
   }
 
@@ -104,6 +132,11 @@ class ReadingProgressTracker {
       const chapterTitle =
         chapterTitles[progress.chapter] ||
         (progress.chapter === 0 ? "Предисловие" : `Глава ${progress.chapter}`);
+      const scrollPercent = Utils.clamp(
+        parseFloat(progress.scrollPercent) || 0,
+        0,
+        100,
+      );
 
       const timeAgo = this.formatTimeAgo(progress.timestamp);
 
@@ -121,9 +154,9 @@ class ReadingProgressTracker {
                     <div class="resume-modal-progress">
                         <div class="resume-chapter-name">${Utils.escapeHtml(chapterTitle)}</div>
                         <div class="resume-progress-bar-container">
-                            <div class="resume-progress-bar" style="width: ${progress.scrollPercent}%"></div>
+                            <div class="resume-progress-bar" style="width: ${scrollPercent}%"></div>
                         </div>
-                        <div class="resume-progress-text">Прочтено: ${progress.scrollPercent}%</div>
+                        <div class="resume-progress-text">Прочтено: ${Math.round(scrollPercent)}%</div>
                         <div class="resume-time-ago">${timeAgo}</div>
                     </div>
                     <div class="resume-modal-buttons">
@@ -139,8 +172,13 @@ class ReadingProgressTracker {
         modal.classList.add("visible");
       });
 
+      let keyHandler = null;
+
       const cleanup = () => {
         modal.classList.remove("visible");
+        if (keyHandler) {
+          document.removeEventListener("keydown", keyHandler);
+        }
         setTimeout(() => modal.remove(), 300);
       };
 
@@ -152,20 +190,19 @@ class ReadingProgressTracker {
 
       document.getElementById("resume-continue-btn").addEventListener("click", () => {
         cleanup();
-        resolve({ action: "continue", chapter: progress.chapter, scrollPercent: progress.scrollPercent });
+        resolve({ action: "continue", chapter: progress.chapter, scrollPercent });
       });
 
       modal.querySelector(".resume-modal-overlay").addEventListener("click", () => {
         cleanup();
-        resolve({ action: "continue", chapter: progress.chapter, scrollPercent: progress.scrollPercent });
+        resolve({ action: "continue", chapter: progress.chapter, scrollPercent });
       });
 
-      const keyHandler = (e) => {
+      keyHandler = (e) => {
         if (e.key === "Escape") {
           cleanup();
           const startChapter = hasPreface ? 0 : 1;
           resolve({ action: "start", chapter: startChapter, scrollPercent: 0 });
-          document.removeEventListener("keydown", keyHandler);
         }
       };
       document.addEventListener("keydown", keyHandler);

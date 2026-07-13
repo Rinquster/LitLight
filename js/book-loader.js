@@ -13,6 +13,8 @@ class BookLoader {
     this.hintRules = []; // оставлен для совместимости, но не используется
     this.titlesLoaded = false;
     this.titleLoadingPromise = null;
+    this.defaultChapterFilenamePadding = 2;
+    this.maxChapterFilenamePadding = 4;
   }
 
   async init(bookId) {
@@ -22,7 +24,7 @@ class BookLoader {
       await this.loadBookInfo();
       this.buildChapterList();
       
-      if (this.bookInfo.hasMedia !== false) {
+      if (this.bookInfo.hasMedia === true) {
         await this.loadMediaRules();
       } else {
         console.log(`ℹ️ Книга "${this.bookInfo.title}" не содержит медиа, пропускаем загрузку media-rules.json`);
@@ -37,7 +39,7 @@ class BookLoader {
       this.createChapterNavigation();
       this.setupNavigation();
 
-      this.titleLoadingPromise = this.loadChapterTitlesInBackground();
+      this.titleLoadingPromise = null;
 
       return true;
     } catch (error) {
@@ -72,9 +74,11 @@ class BookLoader {
     const totalChapters = this.bookInfo.totalChapters || 1;
 
     if (hasPreface) {
+      const filenameCandidates = this.getChapterFilenameCandidates(0);
       this.chapterFiles.push({
         number: 0,
-        filename: "00.html",
+        filename: filenameCandidates[0],
+        filenameCandidates,
         exists: true,
         isPreface: true,
       });
@@ -82,10 +86,11 @@ class BookLoader {
     }
 
     for (let i = 1; i <= totalChapters; i++) {
-      const padded = i.toString().padStart(2, "0");
+      const filenameCandidates = this.getChapterFilenameCandidates(i);
       this.chapterFiles.push({
         number: i,
-        filename: `${padded}.html`,
+        filename: filenameCandidates[0],
+        filenameCandidates,
         exists: true,
         isPreface: false,
       });
@@ -97,6 +102,163 @@ class BookLoader {
       `📚 Built chapter list: ${this.totalChapters} entries ` +
         `(preface: ${hasPreface}, chapters: ${totalChapters})`,
     );
+  }
+
+  getChapterFilenameCandidates(chapterNumber) {
+    const numericChapter = Number.parseInt(chapterNumber, 10);
+    if (!Number.isFinite(numericChapter) || numericChapter < 0) {
+      return [];
+    }
+
+    const baseName = numericChapter.toString();
+    const candidates = [];
+    const addCandidate = (filename) => {
+      if (!this.isSafeChapterFilename(filename)) return;
+      if (!candidates.includes(filename)) {
+        candidates.push(filename);
+      }
+    };
+
+    addCandidate(this.getConfiguredChapterFilename(numericChapter));
+
+    for (const width of this.getChapterFilenamePaddingCandidates(numericChapter)) {
+      addCandidate(`${baseName.padStart(width, "0")}.html`);
+    }
+
+    return candidates;
+  }
+
+  getChapterFilenamePaddingCandidates(chapterNumber) {
+    const configuredWidths = this.getConfiguredPaddingWidths();
+    const maxWidth = Math.max(
+      this.maxChapterFilenamePadding,
+      this.getMaxConfiguredPaddingWidth(),
+      chapterNumber.toString().length,
+      (this.bookInfo?.totalChapters || chapterNumber).toString().length,
+    );
+
+    const widths = [];
+    const addWidth = (width) => {
+      const parsed = Number.parseInt(width, 10);
+      if (!Number.isFinite(parsed) || parsed < 1) return;
+      if (!widths.includes(parsed)) {
+        widths.push(parsed);
+      }
+    };
+
+    configuredWidths.forEach(addWidth);
+    addWidth(this.defaultChapterFilenamePadding);
+    addWidth(chapterNumber.toString().length);
+    addWidth(3);
+
+    for (let width = 1; width <= maxWidth; width++) {
+      addWidth(width);
+    }
+
+    return widths;
+  }
+
+  getConfiguredPaddingWidths() {
+    const configured =
+      this.bookInfo?.chapterFilenamePadding ??
+      this.bookInfo?.chapterFilenameWidth ??
+      this.bookInfo?.chapterFilenameDigits ??
+      [];
+
+    return Array.isArray(configured) ? configured : [configured];
+  }
+
+  getMaxConfiguredPaddingWidth() {
+    const configured =
+      this.bookInfo?.maxChapterFilenamePadding ??
+      this.bookInfo?.maxChapterFilenameWidth ??
+      this.bookInfo?.maxChapterFilenameDigits;
+    const parsed = Number.parseInt(configured, 10);
+
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  }
+
+  getConfiguredChapterFilename(chapterNumber) {
+    const chapterFiles = this.bookInfo?.chapterFiles;
+    if (!chapterFiles || typeof chapterFiles !== "object") {
+      return null;
+    }
+
+    const configured = chapterFiles[String(chapterNumber)];
+    return typeof configured === "string" ? configured.trim() : null;
+  }
+
+  isSafeChapterFilename(filename) {
+    return (
+      typeof filename === "string" &&
+      /^[^/\\]+\.html$/i.test(filename.trim())
+    );
+  }
+
+  getChapterFetchCandidates(chapter) {
+    const candidates = [];
+    const addCandidate = (filename) => {
+      if (!this.isSafeChapterFilename(filename)) return;
+      const normalized = filename.trim();
+      if (!candidates.includes(normalized)) {
+        candidates.push(normalized);
+      }
+    };
+
+    addCandidate(chapter.resolvedFilename);
+    addCandidate(chapter.filename);
+
+    for (const filename of chapter.filenameCandidates || []) {
+      addCandidate(filename);
+    }
+
+    for (const filename of this.getChapterFilenameCandidates(chapter.number)) {
+      addCandidate(filename);
+    }
+
+    return candidates;
+  }
+
+  async fetchChapterResponse(chapter, fetchOptions = {}) {
+    const candidates = this.getChapterFetchCandidates(chapter);
+    const attemptedFilenames = [];
+    let lastError = null;
+
+    for (const filename of candidates) {
+      attemptedFilenames.push(filename);
+
+      try {
+        const response = await fetch(
+          `./books/${this.bookId}/chapters/${filename}`,
+          fetchOptions,
+        );
+
+        if (!response.ok) {
+          continue;
+        }
+
+        chapter.filename = filename;
+        chapter.resolvedFilename = filename;
+        chapter.exists = true;
+        chapter.attemptedFilenames = attemptedFilenames;
+
+        return { response, filename };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    chapter.exists = false;
+    chapter.attemptedFilenames = attemptedFilenames;
+
+    if (lastError) {
+      console.warn(
+        `⚠️ Error while resolving chapter ${chapter.number}:`,
+        lastError,
+      );
+    }
+
+    return null;
   }
 
   async loadMediaRules() {
@@ -117,18 +279,21 @@ class BookLoader {
 
   async loadSingleChapterTitle(chapter) {
     try {
-      const response = await fetch(
-        `./books/${this.bookId}/chapters/${chapter.filename}`,
-        { cache: "no-cache" },
-      );
+      const chapterResult = await this.fetchChapterResponse(chapter, {
+        cache: "no-cache",
+      });
 
-      if (!response.ok) {
-        console.warn(`⚠️ Chapter ${chapter.number} not found on server`);
+      if (!chapterResult) {
+        console.warn(
+          `⚠️ Chapter ${chapter.number} not found on server. Tried: ${
+            chapter.attemptedFilenames?.join(", ") || "no filename candidates"
+          }`,
+        );
         chapter.exists = false;
         return null;
       }
 
-      const html = await response.text();
+      const html = await chapterResult.response.text();
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, "text/html");
 
@@ -191,6 +356,18 @@ class BookLoader {
     console.log("✅ All chapter titles loaded in background");
   }
 
+  ensureChapterTitlesLoaded() {
+    if (this.titlesLoaded) {
+      return Promise.resolve();
+    }
+
+    if (!this.titleLoadingPromise) {
+      this.titleLoadingPromise = this.loadChapterTitlesInBackground();
+    }
+
+    return this.titleLoadingPromise;
+  }
+
   removeChapterFromList(chapterNumber) {
     this.chapterFiles = this.chapterFiles.filter(
       (c) => c.number !== chapterNumber,
@@ -246,15 +423,20 @@ class BookLoader {
         throw new Error(`Chapter ${chapterNumber} not found`);
       }
 
-      const url = `./books/${this.bookId}/chapters/${chapterInfo.filename}`;
-      const response = await fetch(url, { cache: "no-cache" });
+      const chapterResult = await this.fetchChapterResponse(chapterInfo, {
+        cache: "no-cache",
+      });
 
-      if (!response.ok) {
-        chapterInfo.exists = false;
-        throw new Error(`HTTP ${response.status}`);
+      if (!chapterResult) {
+        throw new Error(
+          `Chapter file not found. Tried: ${
+            chapterInfo.attemptedFilenames?.join(", ") ||
+            "no filename candidates"
+          }`,
+        );
       }
 
-      let html = await response.text();
+      let html = await chapterResult.response.text();
 
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, "text/html");
@@ -298,21 +480,20 @@ class BookLoader {
   createErrorChapter(chapterNumber) {
     const chapterDisplay =
       chapterNumber === 0 ? "предисловия" : `главы ${chapterNumber}`;
-    const fileName =
-      chapterNumber === 0
-        ? "00.html"
-        : `${chapterNumber.toString().padStart(2, "0")}.html`;
+    const checkedFiles = this.getChapterFilenameCandidates(chapterNumber)
+      .map((fileName) => `books/${this.bookId}/chapters/${fileName}`)
+      .join(", ");
 
     return `
             <div class="error-chapter">
                 <h1 class="chapter-title">Ошибка загрузки ${chapterDisplay}</h1>
-                <p class="chapter-meta">Файл books/${this.bookId}/chapters/${fileName} не найден</p>
+                <p class="chapter-meta">Не удалось найти файл главы. Проверялись варианты: ${Utils.escapeHtml(checkedFiles)}</p>
                 <div class="error-content">
                     <div class="error-actions">
-                        <button onclick="window.readingApp?.goToChapter(1)" class="error-btn">
+                        <button type="button" data-reader-action="go-first" class="error-btn">
                             Перейти к главе 1
                         </button>
-                        <button onclick="location.reload()" class="error-btn">
+                        <button type="button" data-reader-action="reload" class="error-btn">
                             Обновить страницу
                         </button>
                     </div>
