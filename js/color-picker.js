@@ -14,6 +14,13 @@ class CustomColorPicker {
     this.color = this.options.currentColor;
     this.hsl = this.rgbToHsl(this.hexToRgb(this.color));
     this.canvasMouseDown = false;
+    this.isClosing = false;
+    this.handleDocumentMouseMove = null;
+    this.handleDocumentMouseUp = null;
+    this.handleDocumentTouchMove = null;
+    this.handleDocumentTouchEnd = null;
+    this.handleDocumentClick = null;
+    this.handleDocumentKeydown = null;
     this.init();
   }
 
@@ -114,15 +121,18 @@ class CustomColorPicker {
       this.canvasMouseDown = true;
     });
 
-    document.addEventListener("mousemove", (e) => {
+    this.handleDocumentMouseMove = (e) => {
       if (this.canvasMouseDown) {
         this.handleCanvasInteraction(e);
       }
-    });
+    };
 
-    document.addEventListener("mouseup", () => {
+    this.handleDocumentMouseUp = () => {
       this.canvasMouseDown = false;
-    });
+    };
+
+    document.addEventListener("mousemove", this.handleDocumentMouseMove);
+    document.addEventListener("mouseup", this.handleDocumentMouseUp);
 
     this.slCanvas.addEventListener("touchstart", (e) => {
       e.preventDefault();
@@ -130,16 +140,19 @@ class CustomColorPicker {
       this.canvasMouseDown = true;
     });
 
-    document.addEventListener("touchmove", (e) => {
+    this.handleDocumentTouchMove = (e) => {
       if (this.canvasMouseDown) {
         e.preventDefault();
         this.handleCanvasInteraction(e.touches[0]);
       }
-    });
+    };
 
-    document.addEventListener("touchend", () => {
+    this.handleDocumentTouchEnd = () => {
       this.canvasMouseDown = false;
-    });
+    };
+
+    document.addEventListener("touchmove", this.handleDocumentTouchMove);
+    document.addEventListener("touchend", this.handleDocumentTouchEnd);
 
     const presets = this.popup.querySelectorAll(".color-preset");
     presets.forEach((preset) => {
@@ -160,7 +173,7 @@ class CustomColorPicker {
       this.close();
     });
 
-    document.addEventListener("click", (e) => {
+    this.handleDocumentClick = (e) => {
       if (
         this.popup &&
         !this.popup.contains(e.target) &&
@@ -168,13 +181,16 @@ class CustomColorPicker {
       ) {
         this.close();
       }
-    });
+    };
 
-    document.addEventListener("keydown", (e) => {
+    this.handleDocumentKeydown = (e) => {
       if (e.key === "Escape" && this.popup.parentNode) {
         this.close();
       }
-    });
+    };
+
+    document.addEventListener("click", this.handleDocumentClick);
+    document.addEventListener("keydown", this.handleDocumentKeydown);
   }
 
   handleCanvasInteraction(e) {
@@ -392,12 +408,36 @@ class CustomColorPicker {
   }
 
   close() {
+    if (this.isClosing) return;
+    this.isClosing = true;
+    this.removeDocumentListeners();
     this.popup.classList.remove("open");
     setTimeout(() => {
       if (this.popup.parentNode) {
         this.popup.parentNode.removeChild(this.popup);
       }
     }, 300);
+  }
+
+  removeDocumentListeners() {
+    if (this.handleDocumentMouseMove) {
+      document.removeEventListener("mousemove", this.handleDocumentMouseMove);
+    }
+    if (this.handleDocumentMouseUp) {
+      document.removeEventListener("mouseup", this.handleDocumentMouseUp);
+    }
+    if (this.handleDocumentTouchMove) {
+      document.removeEventListener("touchmove", this.handleDocumentTouchMove);
+    }
+    if (this.handleDocumentTouchEnd) {
+      document.removeEventListener("touchend", this.handleDocumentTouchEnd);
+    }
+    if (this.handleDocumentClick) {
+      document.removeEventListener("click", this.handleDocumentClick);
+    }
+    if (this.handleDocumentKeydown) {
+      document.removeEventListener("keydown", this.handleDocumentKeydown);
+    }
   }
 }
 

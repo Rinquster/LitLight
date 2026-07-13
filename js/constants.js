@@ -25,8 +25,8 @@ export const MEDIA_TYPES = {
   IMAGE: "image",
 };
 
-export const CHAPTER_FILES_PATTERN = /^\d{2}\.html$/;
-export const MAX_CHAPTERS = 33;
+export const CHAPTER_FILES_PATTERN = /^\d+\.html$/;
+export const MAX_CHAPTERS = 150;
 
 export const CSS_VARS = [
   "--bg-color",
