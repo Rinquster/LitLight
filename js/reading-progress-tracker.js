@@ -44,12 +44,36 @@ class ReadingProgressTracker {
 
     if (!Number.isFinite(safeChapter)) return;
 
+    const roundedScrollPercent = Math.round(safeScrollPercent);
+
+    if (this.isFinishedReading(safeChapter, roundedScrollPercent)) {
+      delete this.progressData[this.currentBookId];
+      this.saveProgress();
+      return;
+    }
+
     this.progressData[this.currentBookId] = {
       chapter: safeChapter,
-      scrollPercent: Math.round(safeScrollPercent),
+      scrollPercent: roundedScrollPercent,
       timestamp: Date.now(),
     };
     this.saveDebounced();
+  }
+
+  isFinishedReading(chapterNumber, scrollPercent) {
+    if (scrollPercent < 100) return false;
+
+    const chapterFiles = window.readingApp?.bookLoader?.chapterFiles;
+    if (!Array.isArray(chapterFiles) || chapterFiles.length === 0) {
+      return false;
+    }
+
+    const lastChapter = parseInt(
+      chapterFiles[chapterFiles.length - 1]?.number,
+      10,
+    );
+
+    return Number.isFinite(lastChapter) && chapterNumber >= lastChapter;
   }
 
   getProgress(bookId) {

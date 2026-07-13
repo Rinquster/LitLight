@@ -5,7 +5,7 @@ import ThemeManager from "./theme-manager.js";
 import SettingsManager from "./settings-manager.js";
 import BookLoader from "./book-loader.js";
 import MediaInjector from "./media-injector.js";
-import ReadingProgressTracker from "./reading-progress-tracker.js";
+import ReadingProgressTracker from "./reading-progress-tracker.js?v=20260713-3";
 
 class ReadingApp {
   constructor() {
@@ -17,6 +17,7 @@ class ReadingApp {
     this.initializationError = null;
     this.progressTracker = null;
     this.requestedChapter = 1;
+    this.shouldResumeFromProgress = false;
     this.initStarted = false;
     this.isChapterLoading = false;
     this.chapterLoadToken = 0;
@@ -93,6 +94,7 @@ class ReadingApp {
 
     const urlParams = new URLSearchParams(window.location.search);
     this.bookId = urlParams.get("id");
+    this.shouldResumeFromProgress = urlParams.get("resume") === "1";
 
     const chapterParam = urlParams.get("chapter");
     this.requestedChapter =
@@ -116,7 +118,7 @@ class ReadingApp {
     }
 
     console.log(
-      `📚 Starting Reading App for book: ${this.bookId}, chapter from URL: ${this.requestedChapter}`,
+      `📚 Starting Reading App for book: ${this.bookId}, chapter from URL: ${this.requestedChapter}, resume: ${this.shouldResumeFromProgress}`,
     );
 
     try {
@@ -259,6 +261,26 @@ class ReadingApp {
   async determineStartChapter() {
     const hasPreface = this.bookLoader.chapterFiles.some((c) => c.number === 0);
     const defaultStart = hasPreface ? 0 : 1;
+    const progress = this.progressTracker.getProgress(this.bookId);
+
+    if (
+      this.shouldResumeFromProgress &&
+      progress &&
+      this.progressTracker.hasProgress(this.bookId)
+    ) {
+      const resolvedChapter = this.resolveStartChapter(progress.chapter);
+      const scrollPercent = Utils.clamp(
+        parseFloat(progress.scrollPercent) || 0,
+        0,
+        100,
+      );
+
+      console.log(
+        `📍 Resume requested from library: chapter ${resolvedChapter}, scroll ${scrollPercent}%`,
+      );
+
+      return { chapter: resolvedChapter, scrollPercent };
+    }
 
     // Если глава была явно запрошена в URL, используем её
     if (this.requestedChapter !== null) {
@@ -266,8 +288,6 @@ class ReadingApp {
       console.log(`📍 URL chapter requested: ${resolved}`);
       return { chapter: resolved, scrollPercent: 0 };
     }
-
-    const progress = this.progressTracker.getProgress(this.bookId);
 
     // Проверяем, есть ли реальный прогресс (не нулевой на первой главе)
     if (progress && this.progressTracker.hasProgress(this.bookId)) {

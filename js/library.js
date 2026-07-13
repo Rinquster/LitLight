@@ -11,12 +11,28 @@ class LibraryApp {
   constructor() {
     this.themeManager = null;
     this.books = [];
+    this.filteredBooks = [];
+    this.progressData = {};
     this.booksGrid = document.getElementById("books-grid");
     this.loadingOverlay = document.getElementById("loading-overlay");
+    this.libraryCount = document.getElementById("library-count");
+    this.searchInput = document.getElementById("library-search");
+    this.resumePanel = document.getElementById("library-resume");
+    this.resumeList = document.getElementById("library-resume-list");
+    this.filterButtons = document.querySelectorAll("[data-library-filter]");
+    this.viewButtons = document.querySelectorAll("[data-library-view]");
     this.ageGateModal = null;
     this.ageConfirmed = false;
     this.CATALOG_CACHE_KEY = "booksCatalogCache";
+    this.READING_PROGRESS_KEY = "readingProgress";
+    this.VIEW_MODE_KEY = "libraryViewMode";
+    this.searchQuery = "";
+    this.activeFilter = "all";
+    this.viewMode = Utils.loadFromStorage(this.VIEW_MODE_KEY, "list");
     this.handleBooksGridClick = this.handleBooksGridClick.bind(this);
+    this.handleFilterClick = this.handleFilterClick.bind(this);
+    this.handleViewClick = this.handleViewClick.bind(this);
+    this.handleResumePanelClick = this.handleResumePanelClick.bind(this);
   }
 
   async init() {
@@ -29,6 +45,7 @@ class LibraryApp {
 
     try {
       await this.scanBooks();
+      this.loadReadingProgress();
       this.render();
 
       if (!this.ageConfirmed) {
@@ -284,8 +301,295 @@ class LibraryApp {
   }
 
   setupEventListeners() {
+    if (this.booksGrid) {
+      this.booksGrid.addEventListener("click", this.handleBooksGridClick);
+    }
+
+    if (this.searchInput) {
+      this.searchInput.addEventListener(
+        "input",
+        Utils.debounce((event) => {
+          this.searchQuery = event.target.value.trim();
+          this.render();
+        }, 120),
+      );
+    }
+
+    this.filterButtons.forEach((button) => {
+      button.addEventListener("click", this.handleFilterClick);
+    });
+
+    this.viewButtons.forEach((button) => {
+      button.addEventListener("click", this.handleViewClick);
+    });
+
+    this.resumePanel?.addEventListener("click", this.handleResumePanelClick);
+  }
+
+  handleFilterClick(event) {
+    const filter = event.currentTarget.dataset.libraryFilter || "all";
+    if (this.activeFilter === filter) return;
+
+    this.activeFilter = filter;
+    this.render();
+  }
+
+  handleViewClick(event) {
+    const viewMode = event.currentTarget.dataset.libraryView;
+    if (!["list", "grid"].includes(viewMode) || this.viewMode === viewMode) {
+      return;
+    }
+
+    this.viewMode = viewMode;
+    Utils.saveToStorage(this.VIEW_MODE_KEY, viewMode);
+    this.applyViewMode();
+    this.updateViewButtons();
+  }
+
+  handleResumePanelClick(event) {
+    const button = event.target.closest("[data-resume-action]");
+    if (!button || !this.resumePanel?.contains(button)) return;
+
+    const bookId = button.dataset.bookId;
+    if (!bookId) return;
+
+    if (button.dataset.resumeAction === "remove") {
+      this.clearBookProgress(bookId);
+      this.render();
+      return;
+    }
+
+    const book = this.books.find((item) => item.id === bookId);
+    if (!book) return;
+
+    const ageRating = parseInt(book.ageRating, 10) || 0;
+
+    if (ageRating >= 18 && !this.ageConfirmed) {
+      const message = `Для доступа к книге "${book.title}" необходимо подтвердить, что вам есть 18 лет.`;
+      this.createAgeGateModal(message);
+      return;
+    }
+
+    this.rememberSelectedBook(book.id);
+    window.location.href = `./book.html?id=${encodeURIComponent(book.id)}&resume=1`;
+  }
+
+  loadReadingProgress() {
+    const progress = Utils.loadFromStorage(this.READING_PROGRESS_KEY, {});
+    this.progressData =
+      progress && typeof progress === "object" && !Array.isArray(progress)
+        ? progress
+        : {};
+    this.removeCompletedProgressEntries();
+  }
+
+  clearBookProgress(bookId) {
+    if (!this.progressData?.[bookId]) return;
+
+    delete this.progressData[bookId];
+    Utils.saveToStorage(this.READING_PROGRESS_KEY, this.progressData);
+  }
+
+  removeCompletedProgressEntries() {
+    let changed = false;
+
+    this.books.forEach((book) => {
+      const progress = this.getBookProgress(book.id);
+      if (!progress || !this.isCompletedProgress(book, progress)) return;
+
+      delete this.progressData[book.id];
+      changed = true;
+    });
+
+    if (changed) {
+      Utils.saveToStorage(this.READING_PROGRESS_KEY, this.progressData);
+    }
+  }
+
+  getBookProgress(bookId) {
+    const progress = this.progressData?.[bookId];
+    if (!progress || typeof progress !== "object") return null;
+
+    const chapter = parseInt(progress.chapter, 10);
+    const scrollPercent = Utils.clamp(
+      parseFloat(progress.scrollPercent) || 0,
+      0,
+      100,
+    );
+    const timestamp = parseInt(progress.timestamp, 10) || 0;
+
+    if (!Number.isFinite(chapter)) return null;
+
+    return { chapter, scrollPercent, timestamp };
+  }
+
+  hasBookProgress(bookId) {
+    const progress = this.getBookProgress(bookId);
+    if (!progress) return false;
+
+    return progress.chapter > 0 || progress.scrollPercent > 3;
+  }
+
+  isCompletedProgress(book, progress) {
+    if (!progress) return false;
+
+    const lastChapter = this.getLastChapterNumber(book);
+    if (!Number.isFinite(lastChapter)) return false;
+
+    return (
+      progress.chapter >= lastChapter &&
+      Math.round(progress.scrollPercent || 0) >= 100
+    );
+  }
+
+  getLastChapterNumber(book) {
+    const totalChapters = parseInt(book.totalChapters, 10);
+    return Number.isFinite(totalChapters) && totalChapters > 0
+      ? totalChapters
+      : null;
+  }
+
+  getReadingProgressEntries() {
+    return this.books
+      .map((book) => ({
+        book,
+        progress: this.getBookProgress(book.id),
+      }))
+      .filter(({ book, progress }) => {
+        if (!progress || this.isCompletedProgress(book, progress)) return false;
+        return progress.chapter > 0 || progress.scrollPercent > 3;
+      })
+      .sort((left, right) => right.progress.timestamp - left.progress.timestamp);
+  }
+
+  getFilteredBooks() {
+    const normalizedQuery = this.normalizeSearchText(this.searchQuery);
+
+    return this.books.filter((book) => {
+      if (normalizedQuery && !this.bookMatchesSearch(book, normalizedQuery)) {
+        return false;
+      }
+
+      return this.bookMatchesFilter(book);
+    });
+  }
+
+  bookMatchesSearch(book, normalizedQuery) {
+    const searchableText = [
+      book.title,
+      book.author,
+      book.description,
+      ...(book.tags || []),
+    ]
+      .filter(Boolean)
+      .join(" ");
+
+    return this.normalizeSearchText(searchableText).includes(normalizedQuery);
+  }
+
+  normalizeSearchText(value) {
+    return String(value || "")
+      .trim()
+      .toLocaleLowerCase("ru-RU");
+  }
+
+  bookMatchesFilter(book) {
+    switch (this.activeFilter) {
+      case "finished":
+        return Boolean(book.finished);
+      case "unfinished":
+        return !book.finished;
+      case "media":
+        return Boolean(book.hasMedia);
+      case "adult":
+        return (parseInt(book.ageRating, 10) || 0) >= 18;
+      case "all":
+      default:
+        return true;
+    }
+  }
+
+  updateLibraryHeader(visibleCount) {
+    this.updateLibraryCount(visibleCount);
+    this.updateFilterButtons();
+    this.renderResumePanel();
+    this.applyViewMode();
+    this.updateViewButtons();
+  }
+
+  updateLibraryCount(visibleCount) {
+    if (!this.libraryCount) return;
+
+    const total = this.books.length;
+    const hasNarrowedResults =
+      visibleCount !== total ||
+      Boolean(this.searchQuery) ||
+      this.activeFilter !== "all";
+
+    this.libraryCount.textContent = hasNarrowedResults
+      ? `${visibleCount} из ${total} ${this.pluralizeBooks(total)}`
+      : `${total} ${this.pluralizeBooks(total)}`;
+  }
+
+  updateFilterButtons() {
+    this.filterButtons.forEach((button) => {
+      const isActive = button.dataset.libraryFilter === this.activeFilter;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
+    });
+  }
+
+  renderResumePanel() {
+    if (!this.resumePanel || !this.resumeList) return;
+
+    const readingEntries = this.getReadingProgressEntries();
+
+    if (readingEntries.length === 0) {
+      this.resumePanel.hidden = true;
+      this.resumeList.innerHTML = "";
+      return;
+    }
+
+    this.resumePanel.hidden = false;
+    this.resumeList.innerHTML = readingEntries
+      .map(({ book, progress }) => this.createResumeItem(book, progress))
+      .join("");
+  }
+
+  createResumeItem(book, progress) {
+    const title = book.title || "Без названия";
+    const safeTitle = Utils.escapeHtml(title);
+    const safeBookId = Utils.escapeHtml(book.id);
+    const meta = `${this.formatProgressPosition(progress)} · ${this.formatTimeAgo(progress.timestamp)}`;
+
+    return `
+      <div class="library-resume-item" data-book-id="${safeBookId}">
+        <button class="library-resume-main" type="button" data-resume-action="continue" data-book-id="${safeBookId}">
+          <strong>${safeTitle}</strong>
+          <span>${Utils.escapeHtml(meta)}</span>
+        </button>
+        <button class="library-resume-remove" type="button" data-resume-action="remove" data-book-id="${safeBookId}" aria-label="Удалить прогресс: ${safeTitle}" title="Удалить из продолжения">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 7h14M10 11v6M14 11v6M9 7l1-2h4l1 2M7 7l1 13h8l1-13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    `;
+  }
+
+  applyViewMode() {
     if (!this.booksGrid) return;
-    this.booksGrid.addEventListener("click", this.handleBooksGridClick);
+
+    this.booksGrid.classList.toggle("view-grid", this.viewMode === "grid");
+    this.booksGrid.classList.toggle("view-list", this.viewMode !== "grid");
+  }
+
+  updateViewButtons() {
+    this.viewButtons.forEach((button) => {
+      const isActive = button.dataset.libraryView === this.viewMode;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", String(isActive));
+    });
   }
 
   handleBooksGridClick(event) {
@@ -349,14 +653,26 @@ class LibraryApp {
       return;
     }
 
+    this.loadReadingProgress();
+
     if (this.books.length === 0) {
+      this.updateLibraryHeader(0);
       this.booksGrid.innerHTML =
         '<div class="no-books">📚 В библиотеке пока нет книг</div>';
       return;
     }
 
+    this.filteredBooks = this.getFilteredBooks();
+    this.updateLibraryHeader(this.filteredBooks.length);
+
+    if (this.filteredBooks.length === 0) {
+      this.booksGrid.innerHTML =
+        '<div class="no-books">Ничего не найдено</div>';
+      return;
+    }
+
     let html = "";
-    this.books.forEach((book, index) => {
+    this.filteredBooks.forEach((book, index) => {
       console.log("📚 Processing book:", book);
       html += this.createBookCard(book, index);
     });
@@ -395,6 +711,45 @@ class LibraryApp {
     } else {
       return '<span class="book-status status-progress" title="Произведение в процессе написания">🔄 В процессе</span>';
     }
+  }
+
+  getProgressHtml(book) {
+    const progress = this.getBookProgress(book.id);
+    if (!progress || !this.hasBookProgress(book.id)) {
+      return "";
+    }
+
+    return `<span class="book-reading-progress" title="Сохранённый прогресс">🔖 ${Utils.escapeHtml(this.formatProgressPosition(progress))}</span>`;
+  }
+
+  formatProgressPosition(progress) {
+    const chapterText =
+      progress.chapter === 0 ? "предисловие" : `глава ${progress.chapter}`;
+    const percent = Math.round(Utils.clamp(progress.scrollPercent || 0, 0, 100));
+
+    return `${chapterText} · ${percent}%`;
+  }
+
+  formatTimeAgo(timestamp) {
+    if (!timestamp) return "давно";
+
+    const now = Date.now();
+    const diff = Math.max(0, now - timestamp);
+    const minutes = Math.floor(diff / 60000);
+    const hours = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+
+    if (minutes < 1) return "только что";
+    if (minutes < 60) return `${minutes} мин. назад`;
+    if (hours < 24) return `${hours} ч. назад`;
+    if (days < 7) return `${days} дн. назад`;
+
+    const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return "давно";
+
+    const day = date.getDate().toString().padStart(2, "0");
+    const month = (date.getMonth() + 1).toString().padStart(2, "0");
+    return `${day}.${month}.${date.getFullYear()}`;
   }
 
   createBookCard(book, index = 0) {
@@ -447,6 +802,7 @@ class LibraryApp {
       : "";
 
     const statusHtml = this.getStatusHtml(book);
+    const progressHtml = this.getProgressHtml(book);
     const blockOverlay = isBlocked
       ? '<div class="book-blocked-overlay"><span>🔞 18+</span></div>'
       : "";
@@ -466,6 +822,7 @@ class LibraryApp {
                 
                 <div class="book-meta">
                     ${statusHtml}
+                    ${progressHtml}
                     ${dateHtml}
                     <span>📖 ${totalChapters || "?"} ${this.pluralizeChapters(totalChapters)}</span>
                     ${book.hasMedia ? "<span>🎵 аудио</span>" : ""}
@@ -501,6 +858,21 @@ class LibraryApp {
       return "главы";
     } else {
       return "глав";
+    }
+  }
+
+  pluralizeBooks(count) {
+    count = parseInt(count, 10) || 0;
+
+    if (count % 10 === 1 && count % 100 !== 11) {
+      return "книга";
+    } else if (
+      [2, 3, 4].includes(count % 10) &&
+      ![12, 13, 14].includes(count % 100)
+    ) {
+      return "книги";
+    } else {
+      return "книг";
     }
   }
 
