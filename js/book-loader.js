@@ -10,7 +10,7 @@ class BookLoader {
     this.chapterFiles = [];
     this.chapterTitles = {};
     this.mediaRules = [];
-    this.hintRules = []; // оставлен для совместимости, но не используется
+    this.hintRules = [];
     this.titlesLoaded = false;
     this.titleLoadingPromise = null;
     this.defaultChapterFilenamePadding = 2;
@@ -30,6 +30,9 @@ class BookLoader {
         console.log(`ℹ️ Книга "${this.bookInfo.title}" не содержит медиа, пропускаем загрузку media-rules.json`);
         this.mediaRules = [];
       }
+
+      // hint-rules.json читается всегда: флаг hasHints в info.json нужен только библиотеке.
+      await this.loadHintRules();
 
       console.log(
         `✅ BookLoader initialized for "${this.bookInfo.title}", ` +
@@ -274,6 +277,22 @@ class BookLoader {
       }
     } catch (error) {
       this.mediaRules = [];
+    }
+  }
+
+  async loadHintRules() {
+    const rulesPath = `./books/${this.bookId}/hint-rules.json`;
+    try {
+      const response = await fetch(rulesPath);
+      if (response.ok) {
+        const data = await response.json();
+        this.hintRules = Array.isArray(data.hints) ? data.hints : [];
+        console.log(`💡 Loaded ${this.hintRules.length} hint rules`);
+      } else {
+        this.hintRules = [];
+      }
+    } catch (error) {
+      this.hintRules = [];
     }
   }
 

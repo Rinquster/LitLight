@@ -1,10 +1,11 @@
 // js/app.js
 
 import Utils from "./utils.js";
-import ThemeManager from "./theme-manager.js";
-import SettingsManager from "./settings-manager.js";
-import BookLoader from "./book-loader.js";
+import ThemeManager from "./theme-manager.js?v=20260924-3";
+import SettingsManager from "./settings-manager.js?v=20260924-5";
+import BookLoader from "./book-loader.js?v=20260924-1";
 import MediaInjector from "./media-injector.js";
+import HintInjector from "./hint-injector.js?v=20260924-1";
 import ReadingProgressTracker from "./reading-progress-tracker.js?v=20260713-3";
 
 class ReadingApp {
@@ -13,6 +14,7 @@ class ReadingApp {
     this.settingsManager = null;
     this.bookLoader = null;
     this.mediaInjector = null;
+    this.hintInjector = null;
     this.isInitialized = false;
     this.initializationError = null;
     this.progressTracker = null;
@@ -352,6 +354,8 @@ class ReadingApp {
 
     const loadToken = ++this.chapterLoadToken;
     this.showChapterLoadingOverlay();
+    this.hintInjector?.destroy();
+    this.hintInjector = null;
 
     try {
       chapterNumber = parseInt(chapterNumber);
@@ -401,6 +405,18 @@ class ReadingApp {
 
         if (this.mediaInjector && chapterNumber > 0) {
           this.mediaInjector.postProcessInsteadMedia(contentElement);
+        }
+
+        // Хинты работают во всех главах, включая главу 0.
+        if (!contentElement.querySelector(".error-chapter")) {
+          this.hintInjector = new HintInjector({
+            rules: this.bookLoader.hintRules,
+            reportWarning: (warning) =>
+              console.warn(
+                `⚠️ Hint anchor not found in chapter ${warning.chapter}: "${warning.anchor}"`,
+              ),
+          });
+          this.hintInjector.apply(chapterNumber, contentElement);
         }
 
         this.centerSpecialElements();
@@ -664,6 +680,8 @@ class ReadingApp {
     if (this.mediaInjector) {
       this.mediaInjector.cleanup();
     }
+    this.hintInjector?.destroy();
+    this.hintInjector = null;
     if (this.progressTracker) {
       this.progressTracker.stopTracking();
     }
