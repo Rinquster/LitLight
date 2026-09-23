@@ -4,8 +4,8 @@
 
 export const THEME_PRESETS = {
   light: {
-    bg: "#ffffff",
-    text: "#000000",
+    bg: "#f7f8f4",
+    text: "#242424",
   },
   dark: {
     bg: "#202124",

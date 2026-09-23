@@ -10,26 +10,40 @@
 
     <script>
         (function() {
+            // Цвета стандартных тем — те же, что THEME_PRESETS в js/constants.js.
+            var standardThemes = {
+                light: { bg: '#f7f8f4', text: '#242424' },
+                dark: { bg: '#202124', text: '#e8eaed' }
+            };
+            var isValidHex = function(value) {
+                return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || '').trim());
+            };
             try {
                 var preset = JSON.parse(localStorage.getItem('themePreset'));
                 var colors = JSON.parse(localStorage.getItem('themeColors'));
-                if (preset) {
-                    document.documentElement.setAttribute('data-theme', preset);
-                } else {
-                    document.documentElement.setAttribute('data-theme', 'dark');
-                }
-                if (colors && colors.bg) {
-                    document.documentElement.style.setProperty('--bg-color', colors.bg);
-                    document.documentElement.style.setProperty('--text-color', colors.text);
-                }
-            } catch(e) {}
+                var safePreset = ['light', 'dark', 'custom'].indexOf(preset) >= 0 ? preset : 'dark';
+                var safeColors = safePreset === 'custom'
+                    ? {
+                        bg: isValidHex(colors && colors.bg) ? colors.bg : standardThemes.dark.bg,
+                        text: isValidHex(colors && colors.text) ? colors.text : standardThemes.dark.text
+                    }
+                    : standardThemes[safePreset];
+                var root = document.documentElement;
+                root.setAttribute('data-theme', safePreset);
+                root.style.setProperty('--bg-color', safeColors.bg);
+                root.style.setProperty('--text-color', safeColors.text);
+                var meta = document.getElementById('theme-color-meta');
+                if (meta) meta.setAttribute('content', safeColors.bg);
+            } catch(e) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
         })();
     </script>
 
     <link rel="stylesheet" href="./css/normalize.css">
-    <link rel="stylesheet" href="./css/fonts.css">
-    <link rel="stylesheet" href="./css/styles.css">
-    <link rel="stylesheet" href="./css/color-picker.css">
+    <link rel="stylesheet" href="./css/fonts.css?v=20260924-5">
+    <link rel="stylesheet" href="./css/styles.css?v=20260924-3">
+    <link rel="stylesheet" href="./css/color-picker.css?v=20260924-3">
 </head>
 
 <body>
@@ -145,11 +159,10 @@
                         <option value="LiberationSerif" style="font-family: 'LiberationSerif';">Liberation Serif</option>
                         <option value="Roboto" style="font-family: 'Roboto';">Roboto</option>
                         <option value="SourceCodePro" style="font-family: 'SourceCodePro';">Source Code Pro</option>
-                        <option value="Whitney" style="font-family: 'Whitney';">Whitney</option>
                     </select>
                 </div>
                 <div class="font-size-control">
-                    <label for="font-size">Размер шрифта: <span id="font-size-value">16px</span></label>
+                    <label for="font-size"><span>Размер шрифта</span><span id="font-size-value">16px</span></label>
                     <input type="range" id="font-size" min="12" max="24" step="1" value="16" class="settings-slider">
                 </div>
             </div>
@@ -157,7 +170,7 @@
             <div class="settings-group">
                 <h4>Ширина текста</h4>
                 <div class="width-control">
-                    <label for="text-width">Ширина: <span id="text-width-value">800px</span></label>
+                    <label for="text-width"><span>Ширина</span><span id="text-width-value">800px</span></label>
                     <input type="range" id="text-width" min="400" max="1200" step="50" value="800" class="settings-slider">
                 </div>
             </div>
@@ -166,35 +179,37 @@
                 <h4>Цвета</h4>
                 <div class="color-controls">
                     <div class="color-control">
-                        <label for="bg-color-picker">Фон</label>
-                        <div id="bg-color-picker" class="color-picker-btn" data-color="#ffffff">
-                            <div class="color-preview"></div>
-                        </div>
+                        <span class="color-control-label">Фон</span>
+                        <button id="bg-color-picker" class="color-picker-btn" type="button" aria-label="Выбрать цвет фона" data-color="#202124">
+                            <span class="color-preview"></span>
+                            <span class="color-value">#202124</span>
+                        </button>
                     </div>
                     <div class="color-control">
-                        <label for="text-color-picker">Текст</label>
-                        <div id="text-color-picker" class="color-picker-btn" data-color="#000000">
-                            <div class="color-preview"></div>
-                        </div>
+                        <span class="color-control-label">Текст</span>
+                        <button id="text-color-picker" class="color-picker-btn" type="button" aria-label="Выбрать цвет текста" data-color="#e8eaed">
+                            <span class="color-preview"></span>
+                            <span class="color-value">#E8EAED</span>
+                        </button>
                     </div>
                 </div>
-                <div class="theme-presets">
-                    <button class="theme-preset-btn" data-theme="light">Светлая</button>
-                    <button class="theme-preset-btn" data-theme="dark">Тёмная</button>
+                <div class="preset-row">
+                    <button class="preset-btn theme-preset-btn" type="button" data-theme-preset="light">Светлая</button>
+                    <button class="preset-btn theme-preset-btn" type="button" data-theme-preset="dark">Тёмная</button>
                 </div>
             </div>
 
             <div class="settings-group">
                 <h4>Межстрочный интервал</h4>
                 <div class="line-height-control">
-                    <label for="line-height">Интервал: <span id="line-height-value">1.6</span></label>
+                    <label for="line-height"><span>Интервал</span><span id="line-height-value">1.6</span></label>
                     <input type="range" id="line-height" min="1.2" max="2.4" step="0.1" value="1.6" class="settings-slider">
                 </div>
                 <div class="line-height-presets">
-                    <button class="line-height-preset-btn" data-value="1.4">Плотный</button>
-                    <button class="line-height-preset-btn" data-value="1.6">Стандарт</button>
-                    <button class="line-height-preset-btn" data-value="1.8">Просторный</button>
-                    <button class="line-height-preset-btn" data-value="2.0">Воздушный</button>
+                    <button class="preset-btn line-height-preset-btn" type="button" data-value="1.4">Плотный</button>
+                    <button class="preset-btn line-height-preset-btn" type="button" data-value="1.6">Стандарт</button>
+                    <button class="preset-btn line-height-preset-btn" type="button" data-value="1.8">Просторный</button>
+                    <button class="preset-btn line-height-preset-btn" type="button" data-value="2.0">Воздушный</button>
                 </div>
             </div>
         </div>
@@ -222,7 +237,7 @@
     </div>
 
     <div id="bottom-bar" class="bottom-bar" aria-hidden="true"></div>
-    <script type="module" src="./js/app.js?v=20260713-3"></script>
+    <script type="module" src="./js/app.js?v=20260924-5"></script>
 </body>
 
 </html>

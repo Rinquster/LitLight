@@ -1,444 +1,280 @@
 // js/color-picker.js
+//
+// Окно выбора цвета: превью, HEX и RGB, ползунок оттенка и квадрат
+// насыщенность/яркость. Создаётся сразу при конструировании, закрывается
+// по крестику, «Отмене», Escape или клику мимо; «Применить» отдаёт цвет в onApply.
 
 import Utils from "./utils.js";
 
+function clamp(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.min(max, Math.max(min, number));
+}
+
+function parseHex(hex) {
+  const raw = String(hex ?? "").trim();
+  const short = /^#([0-9a-f]{3})$/i.exec(raw);
+  if (short) {
+    const [r, g, b] = short[1].split("").map((part) => Number.parseInt(part + part, 16));
+    return { r, g, b };
+  }
+  const full = /^#([0-9a-f]{6})$/i.exec(raw);
+  if (!full) return null;
+  return {
+    r: Number.parseInt(full[1].slice(0, 2), 16),
+    g: Number.parseInt(full[1].slice(2, 4), 16),
+    b: Number.parseInt(full[1].slice(4, 6), 16),
+  };
+}
+
 class CustomColorPicker {
-  constructor(options = {}) {
-    this.options = {
-      target: options.target,
-      currentColor: options.currentColor || "#ffffff",
-      onSelect: options.onSelect || (() => {}),
-      position: options.position || "center",
-    };
-
-    this.color = this.options.currentColor;
-    this.hsl = this.rgbToHsl(this.hexToRgb(this.color));
-    this.canvasMouseDown = false;
-    this.isClosing = false;
-    this.handleDocumentMouseMove = null;
-    this.handleDocumentMouseUp = null;
-    this.handleDocumentTouchMove = null;
-    this.handleDocumentTouchEnd = null;
-    this.handleDocumentClick = null;
-    this.handleDocumentKeydown = null;
-    this.init();
+  constructor({ label, color, onApply, onClose } = {}) {
+    this.label = label || "Выбор цвета";
+    this.color = normalizeHex(color) || "#ffffff";
+    this.onApply = onApply || (() => {});
+    this.onClose = onClose || (() => {});
+    this.hsl = rgbToHsl(parseHex(this.color));
+    this.abort = new AbortController();
+    this.activePointerId = null;
+    this.render();
   }
 
-  init() {
-    this.createPopup();
-    this.setupEventListeners();
-    this.updateCanvasAndSlider();
-    this.positionPopup();
+  render() {
+    this.node = document.createElement("div");
+    this.node.className = "custom-color-picker";
+    this.node.setAttribute("role", "dialog");
+    this.node.setAttribute("aria-modal", "true");
+    this.node.setAttribute("aria-label", this.label);
+    this.node.innerHTML = `
+      <div class="color-picker-header">
+        <h4>${Utils.escapeHtml(this.label)}</h4>
+        <button class="close-picker" type="button" data-close aria-label="Закрыть">×</button>
+      </div>
+      <div class="color-picker-body">
+        <div class="color-preview" data-preview></div>
+        <div class="color-value-row">
+          <label>HEX<input class="color-value-input" data-hex readonly></label>
+          <label>RGB<output class="color-rgb-output" data-rgb></output></label>
+        </div>
+        <div class="hsl-controls">
+          <div class="h-slider-container">
+            <label for="custom-hue-slider">Оттенок (H)</label>
+            <input id="custom-hue-slider" class="hue-slider" data-hue type="range" min="0" max="360" value="${this.hsl.h}">
+            <span class="hue-value" data-hue-value>${this.hsl.h}°</span>
+          </div>
+          <div class="sl-canvas-container">
+            <label>Насыщенность / Яркость</label>
+            <canvas class="sl-canvas" data-sl width="200" height="200" role="img" aria-label="Насыщенность и яркость"></canvas>
+          </div>
+        </div>
+        <div class="color-picker-actions">
+          <button class="cancel-btn" type="button" data-cancel>Отмена</button>
+          <button class="apply-btn" type="button" data-apply>Применить</button>
+        </div>
+      </div>
+    `;
+    document.body.append(this.node);
+    this.preview = this.node.querySelector("[data-preview]");
+    this.hexInput = this.node.querySelector("[data-hex]");
+    this.rgbOutput = this.node.querySelector("[data-rgb]");
+    this.hueSlider = this.node.querySelector("[data-hue]");
+    this.hueValue = this.node.querySelector("[data-hue-value]");
+    this.canvas = this.node.querySelector("[data-sl]");
+    this.ctx = this.canvas.getContext("2d");
+    this.bind();
+    this.update();
+    this.position();
+    requestAnimationFrame(() => this.node.classList.add("open", "positioned"));
   }
 
-  createPopup() {
-    this.popup = document.createElement("div");
-    this.popup.className = "custom-color-picker";
-    this.popup.innerHTML = `
-            <div class="color-picker-header">
-                <h4>Выбор цвета</h4>
-                <button class="close-picker" aria-label="Закрыть">×</button>
-            </div>
-            <div class="color-picker-body">
-                <div class="color-preview" style="background-color: ${this.color}"></div>
-                <div class="hsl-controls">
-                    <div class="h-slider-container">
-                        <label>Оттенок (H)</label>
-                        <input type="range" class="hue-slider" min="0" max="360" value="${this.hsl.h}" orient="vertical">
-                        <span class="hue-value">${this.hsl.h}°</span>
-                    </div>
-                    <div class="sl-canvas-container">
-                        <label>Насыщенность / Яркость</label>
-                        <canvas class="sl-canvas" width="200" height="200"></canvas>
-                    </div>
-                </div>
-                <div class="color-presets">
-                    <div class="preset-title">Быстрые цвета:</div>
-                    <div class="preset-grid">
-                        <button class="color-preset" style="background-color: #ffffff" data-color="#ffffff"></button>
-                        <button class="color-preset" style="background-color: #f8f9fa" data-color="#f8f9fa"></button>
-                        <button class="color-preset" style="background-color: #e9ecef" data-color="#e9ecef"></button>
-                        <button class="color-preset" style="background-color: #dee2e6" data-color="#dee2e6"></button>
-                        <button class="color-preset" style="background-color: #ced4da" data-color="#ced4da"></button>
-                        <button class="color-preset" style="background-color: #000000" data-color="#000000"></button>
-                        <button class="color-preset" style="background-color: #212529" data-color="#212529"></button>
-                        <button class="color-preset" style="background-color: #343a40" data-color="#343a40"></button>
-                        <button class="color-preset" style="background-color: #495057" data-color="#495057"></button>
-                        <button class="color-preset" style="background-color: #6c757d" data-color="#6c757d"></button>
-                        <button class="color-preset" style="background-color: #1e88e5" data-color="#1e88e5"></button>
-                        <button class="color-preset" style="background-color: #43a047" data-color="#43a047"></button>
-                    </div>
-                </div>
-                <div class="color-picker-actions">
-                    <button class="cancel-btn">Отмена</button>
-                    <button class="apply-btn">Применить</button>
-                </div>
-            </div>
-        `;
-
-    document.body.appendChild(this.popup);
-    this.slCanvas = this.popup.querySelector(".sl-canvas");
-    this.hueSlider = this.popup.querySelector(".hue-slider");
-    this.hueValueSpan = this.popup.querySelector(".hue-value");
-    this.preview = this.popup.querySelector(".color-preview");
-  }
-
-  positionPopup() {
-    const popupRect = this.popup.getBoundingClientRect();
-    const padding = 20;
-
-    let top = (window.innerHeight - popupRect.height) / 2;
-    let left = (window.innerWidth - popupRect.width) / 2;
-
-    top = Math.max(
-      padding,
-      Math.min(top, window.innerHeight - popupRect.height - padding),
-    );
-    left = Math.max(
-      padding,
-      Math.min(left, window.innerWidth - popupRect.width - padding),
-    );
-
-    this.popup.style.top = `${top}px`;
-    this.popup.style.left = `${left}px`;
-
-    setTimeout(() => {
-      this.popup.classList.add("positioned");
-    }, 10);
-  }
-
-  setupEventListeners() {
-    this.hueSlider.addEventListener("input", (e) => {
-      this.hsl.h = parseInt(e.target.value);
-      this.color = this.hslToHex(this.hsl);
-      this.updatePreview();
-      this.updateHueValueDisplay();
-      this.drawSaturationLightnessSquare();
-    });
-
-    this.slCanvas.addEventListener("mousedown", (e) => {
-      this.handleCanvasInteraction(e);
-      this.canvasMouseDown = true;
-    });
-
-    this.handleDocumentMouseMove = (e) => {
-      if (this.canvasMouseDown) {
-        this.handleCanvasInteraction(e);
-      }
-    };
-
-    this.handleDocumentMouseUp = () => {
-      this.canvasMouseDown = false;
-    };
-
-    document.addEventListener("mousemove", this.handleDocumentMouseMove);
-    document.addEventListener("mouseup", this.handleDocumentMouseUp);
-
-    this.slCanvas.addEventListener("touchstart", (e) => {
-      e.preventDefault();
-      this.handleCanvasInteraction(e.touches[0]);
-      this.canvasMouseDown = true;
-    });
-
-    this.handleDocumentTouchMove = (e) => {
-      if (this.canvasMouseDown) {
-        e.preventDefault();
-        this.handleCanvasInteraction(e.touches[0]);
-      }
-    };
-
-    this.handleDocumentTouchEnd = () => {
-      this.canvasMouseDown = false;
-    };
-
-    document.addEventListener("touchmove", this.handleDocumentTouchMove);
-    document.addEventListener("touchend", this.handleDocumentTouchEnd);
-
-    const presets = this.popup.querySelectorAll(".color-preset");
-    presets.forEach((preset) => {
-      preset.addEventListener("click", () => {
-        const color = preset.dataset.color;
-        this.setColor(color);
-      });
-    });
-
-    this.popup
-      .querySelector(".close-picker")
-      .addEventListener("click", () => this.close());
-    this.popup
-      .querySelector(".cancel-btn")
-      .addEventListener("click", () => this.close());
-    this.popup.querySelector(".apply-btn").addEventListener("click", () => {
-      this.options.onSelect(this.color);
+  bind() {
+    const signal = this.abort.signal;
+    this.hueSlider.addEventListener("input", (event) => {
+      this.hsl.h = Number(event.target.value);
+      this.color = hslToHex(this.hsl);
+      this.update();
+    }, { signal });
+    this.canvas.addEventListener("pointerdown", (event) => this.startCanvasDrag(event), { signal });
+    this.canvas.addEventListener("pointermove", (event) => this.moveCanvasDrag(event), { signal });
+    this.canvas.addEventListener("pointerup", (event) => this.endCanvasDrag(event), { signal });
+    this.canvas.addEventListener("pointercancel", (event) => this.endCanvasDrag(event), { signal });
+    this.node.querySelector("[data-close]").addEventListener("click", () => this.close(), { signal });
+    this.node.querySelector("[data-cancel]").addEventListener("click", () => this.close(), { signal });
+    this.node.querySelector("[data-apply]").addEventListener("click", () => {
+      this.onApply(this.color);
       this.close();
-    });
-
-    this.handleDocumentClick = (e) => {
-      if (
-        this.popup &&
-        !this.popup.contains(e.target) &&
-        e.target !== this.options.target
-      ) {
-        this.close();
-      }
-    };
-
-    this.handleDocumentKeydown = (e) => {
-      if (e.key === "Escape" && this.popup.parentNode) {
-        this.close();
-      }
-    };
-
-    document.addEventListener("click", this.handleDocumentClick);
-    document.addEventListener("keydown", this.handleDocumentKeydown);
+    }, { signal });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") this.close();
+    }, { signal });
+    document.addEventListener("pointerdown", (event) => {
+      if (!this.node.contains(event.target)) this.close();
+    }, { signal });
+    window.addEventListener("resize", () => this.position(), { signal });
   }
 
-  handleCanvasInteraction(e) {
-    const rect = this.slCanvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+  position() {
+    const padding = 20;
+    const rect = this.node.getBoundingClientRect();
+    const top = clamp((window.innerHeight - rect.height) / 2, padding, Math.max(padding, window.innerHeight - rect.height - padding));
+    const left = clamp((window.innerWidth - rect.width) / 2, padding, Math.max(padding, window.innerWidth - rect.width - padding));
+    this.node.style.top = `${top}px`;
+    this.node.style.left = `${left}px`;
+  }
 
-    const clampedX = Math.max(0, Math.min(x, this.slCanvas.width));
-    const clampedY = Math.max(0, Math.min(y, this.slCanvas.height));
+  startCanvasDrag(event) {
+    this.activePointerId = event.pointerId;
+    this.canvas.setPointerCapture?.(event.pointerId);
+    this.updateFromCanvas(event);
+    event.preventDefault();
+  }
 
-    const s = Math.round((clampedX / this.slCanvas.width) * 100);
-    const l = Math.round(100 - (clampedY / this.slCanvas.height) * 100);
+  moveCanvasDrag(event) {
+    if (this.activePointerId !== event.pointerId) return;
+    this.updateFromCanvas(event);
+    event.preventDefault();
+  }
 
-    this.hsl.s = s;
-    this.hsl.l = l;
-    this.color = this.hslToHex(this.hsl);
+  endCanvasDrag(event) {
+    if (this.activePointerId !== event.pointerId) return;
+    this.activePointerId = null;
+    this.canvas.releasePointerCapture?.(event.pointerId);
+  }
 
-    this.updatePreview();
-    this.updateSliders();
+  updateFromCanvas(event) {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = clamp(event.clientX - rect.left, 0, rect.width);
+    const y = clamp(event.clientY - rect.top, 0, rect.height);
+    this.hsl.s = Math.round((x / rect.width) * 100);
+    this.hsl.l = Math.round(100 - (y / rect.height) * 100);
+    this.color = hslToHex(this.hsl);
+    this.update();
+  }
+
+  setColor(color) {
+    const normalized = normalizeHex(color);
+    if (!normalized) return;
+    this.color = normalized;
+    this.hsl = rgbToHsl(parseHex(this.color));
+    this.update();
+  }
+
+  update() {
+    const rgb = parseHex(this.color);
+    this.preview.style.backgroundColor = this.color;
+    this.hexInput.value = this.color.toUpperCase();
+    this.rgbOutput.textContent = `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+    this.hueSlider.value = this.hsl.h;
+    this.hueValue.textContent = `${this.hsl.h}°`;
+    this.drawSaturationLightnessSquare();
   }
 
   drawSaturationLightnessSquare() {
-    const ctx = this.slCanvas.getContext("2d");
-    const width = this.slCanvas.width;
-    const height = this.slCanvas.height;
-
-    ctx.clearRect(0, 0, width, height);
-
-    const imageData = ctx.createImageData(width, height);
+    const width = this.canvas.width;
+    const height = this.canvas.height;
+    const imageData = this.ctx.createImageData(width, height);
     const data = imageData.data;
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
         const index = (y * width + x) * 4;
-
-        const s = (x / (width - 1)) * 100;
-        const l = 100 - (y / (height - 1)) * 100;
-
-        const rgb = this.hslToRgb({ h: this.hsl.h, s: s, l: l });
-
+        const rgb = hslToRgb({
+          h: this.hsl.h,
+          s: (x / (width - 1)) * 100,
+          l: 100 - (y / (height - 1)) * 100,
+        });
         data[index] = rgb.r;
         data[index + 1] = rgb.g;
         data[index + 2] = rgb.b;
         data[index + 3] = 255;
       }
     }
-
-    ctx.putImageData(imageData, 0, 0);
-
+    this.ctx.putImageData(imageData, 0, 0);
     const cursorX = (this.hsl.s / 100) * width;
     const cursorY = ((100 - this.hsl.l) / 100) * height;
-
-    ctx.beginPath();
-    ctx.arc(cursorX, cursorY, 4, 0, 2 * Math.PI);
-    ctx.fillStyle = Utils.isDarkColor(this.color) ? "white" : "black";
-    ctx.strokeStyle = "white";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    ctx.fill();
-  }
-
-  updateCanvasAndSlider() {
-    this.updateHueValueDisplay();
-    this.updateSliders();
-  }
-
-  updatePreview() {
-    if (this.preview) {
-      this.preview.style.backgroundColor = this.color;
-    }
-  }
-
-  updateHueValueDisplay() {
-    if (this.hueValueSpan) {
-      this.hueValueSpan.textContent = `${this.hsl.h}°`;
-    }
-  }
-
-  updateSliders() {
-    if (this.hueSlider) {
-      this.hueSlider.value = this.hsl.h;
-    }
-    this.updateHueValueDisplay();
-    this.drawSaturationLightnessSquare();
-  }
-
-  setColor(color) {
-    const rgb = this.hexToRgb(color);
-    if (!rgb) return;
-
-    this.color = color;
-    this.hsl = this.rgbToHsl(rgb);
-    this.updatePreview();
-    this.updateCanvasAndSlider();
-  }
-
-  hslToRgb(hsl) {
-    let h = hsl.h / 360;
-    let s = hsl.s / 100;
-    let l = hsl.l / 100;
-
-    let r, g, b;
-
-    if (s === 0) {
-      r = g = b = l;
-    } else {
-      const hue2rgb = (p, q, t) => {
-        if (t < 0) t += 1;
-        if (t > 1) t -= 1;
-        if (t < 1 / 6) return p + (q - p) * 6 * t;
-        if (t < 1 / 2) return q;
-        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-        return p;
-      };
-
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-
-      r = hue2rgb(p, q, h + 1 / 3);
-      g = hue2rgb(p, q, h);
-      b = hue2rgb(p, q, h - 1 / 3);
-    }
-
-    return {
-      r: Math.round(r * 255),
-      g: Math.round(g * 255),
-      b: Math.round(b * 255),
-    };
-  }
-
-  hexToRgb(hex) {
-    return Utils.hexToRgb(hex);
-  }
-
-  rgbToHsl(rgb) {
-    let r = rgb.r / 255;
-    let g = rgb.g / 255;
-    let b = rgb.b / 255;
-
-    let max = Math.max(r, g, b);
-    let min = Math.min(r, g, b);
-    let h,
-      s,
-      l = (max + min) / 2;
-
-    if (max === min) {
-      h = s = 0;
-    } else {
-      let d = max - min;
-      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-
-      switch (max) {
-        case r:
-          h = (g - b) / d + (g < b ? 6 : 0);
-          break;
-        case g:
-          h = (b - r) / d + 2;
-          break;
-        case b:
-          h = (r - g) / d + 4;
-          break;
-      }
-
-      h /= 6;
-    }
-
-    return {
-      h: Math.round(h * 360),
-      s: Math.round(s * 100),
-      l: Math.round(l * 100),
-    };
-  }
-
-  hslToHex(hsl) {
-    let h = hsl.h / 360;
-    let s = hsl.s / 100;
-    let l = hsl.l / 100;
-
-    let r, g, b;
-
-    if (s === 0) {
-      r = g = b = l;
-    } else {
-      const hue2rgb = (p, q, t) => {
-        if (t < 0) t += 1;
-        if (t > 1) t -= 1;
-        if (t < 1 / 6) return p + (q - p) * 6 * t;
-        if (t < 1 / 2) return q;
-        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-        return p;
-      };
-
-      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-      const p = 2 * l - q;
-
-      r = hue2rgb(p, q, h + 1 / 3);
-      g = hue2rgb(p, q, h);
-      b = hue2rgb(p, q, h - 1 / 3);
-    }
-
-    const toHex = (c) => {
-      const hex = Math.round(c * 255).toString(16);
-      return hex.length === 1 ? "0" + hex : hex;
-    };
-
-    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-  }
-
-  open() {
-    this.popup.style.display = "block";
-    this.positionPopup();
-    setTimeout(() => {
-      this.popup.classList.add("open");
-    }, 10);
+    this.ctx.beginPath();
+    this.ctx.arc(cursorX, cursorY, 5, 0, Math.PI * 2);
+    this.ctx.fillStyle = colorIsDark(parseHex(this.color)) ? "#ffffff" : "#000000";
+    this.ctx.strokeStyle = "#ffffff";
+    this.ctx.lineWidth = 1.5;
+    this.ctx.stroke();
+    this.ctx.fill();
   }
 
   close() {
-    if (this.isClosing) return;
-    this.isClosing = true;
-    this.removeDocumentListeners();
-    this.popup.classList.remove("open");
-    setTimeout(() => {
-      if (this.popup.parentNode) {
-        this.popup.parentNode.removeChild(this.popup);
-      }
-    }, 300);
+    if (!this.node?.isConnected) return;
+    this.abort.abort();
+    this.node.classList.remove("open");
+    window.setTimeout(() => {
+      this.node?.remove();
+      this.onClose();
+    }, 180);
   }
+}
 
-  removeDocumentListeners() {
-    if (this.handleDocumentMouseMove) {
-      document.removeEventListener("mousemove", this.handleDocumentMouseMove);
-    }
-    if (this.handleDocumentMouseUp) {
-      document.removeEventListener("mouseup", this.handleDocumentMouseUp);
-    }
-    if (this.handleDocumentTouchMove) {
-      document.removeEventListener("touchmove", this.handleDocumentTouchMove);
-    }
-    if (this.handleDocumentTouchEnd) {
-      document.removeEventListener("touchend", this.handleDocumentTouchEnd);
-    }
-    if (this.handleDocumentClick) {
-      document.removeEventListener("click", this.handleDocumentClick);
-    }
-    if (this.handleDocumentKeydown) {
-      document.removeEventListener("keydown", this.handleDocumentKeydown);
-    }
+function normalizeHex(value) {
+  const rgb = parseHex(value);
+  if (!rgb) return null;
+  return `#${[rgb.r, rgb.g, rgb.b].map((part) => part.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function rgbToHsl(rgb) {
+  const r = rgb.r / 255;
+  const g = rgb.g / 255;
+  const b = rgb.b / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0;
+  let s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const diff = max - min;
+    s = l > 0.5 ? diff / (2 - max - min) : diff / (max + min);
+    if (max === r) h = (g - b) / diff + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / diff + 2;
+    else h = (r - g) / diff + 4;
+    h /= 6;
   }
+  return {
+    h: Math.round(h * 360),
+    s: Math.round(s * 100),
+    l: Math.round(l * 100),
+  };
+}
+
+function hslToRgb(hsl) {
+  const h = hsl.h / 360;
+  const s = hsl.s / 100;
+  const l = hsl.l / 100;
+  if (s === 0) {
+    const value = Math.round(l * 255);
+    return { r: value, g: value, b: value };
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const convert = (offset) => {
+    let t = h + offset;
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return {
+    r: Math.round(convert(1 / 3) * 255),
+    g: Math.round(convert(0) * 255),
+    b: Math.round(convert(-1 / 3) * 255),
+  };
+}
+
+function hslToHex(hsl) {
+  const rgb = hslToRgb(hsl);
+  return `#${[rgb.r, rgb.g, rgb.b].map((part) => part.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function colorIsDark(rgb) {
+  return (rgb.r * 299 + rgb.g * 587 + rgb.b * 114) / 1000 < 155;
 }
 
 export default CustomColorPicker;

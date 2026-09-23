@@ -4,30 +4,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#202124">
+    <meta name="theme-color" content="#202124" id="theme-color-meta">
     <title>Библиотека — Читальный движок</title>
     <link rel="icon" href="./favicon.ico" type="image/x-icon">
 
     <script>
         (function() {
+            // Цвета стандартных тем — те же, что THEME_PRESETS в js/constants.js.
+            var standardThemes = {
+                light: { bg: '#f7f8f4', text: '#242424' },
+                dark: { bg: '#202124', text: '#e8eaed' }
+            };
+            var isValidHex = function(value) {
+                return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || '').trim());
+            };
             try {
                 var preset = JSON.parse(localStorage.getItem('themePreset'));
                 var colors = JSON.parse(localStorage.getItem('themeColors'));
-                if (preset) {
-                    document.documentElement.setAttribute('data-theme', preset);
-                } else {
-                    document.documentElement.setAttribute('data-theme', 'dark');
-                }
-                if (colors && colors.bg) {
-                    document.documentElement.style.setProperty('--bg-color', colors.bg);
-                    document.documentElement.style.setProperty('--text-color', colors.text);
-                }
-            } catch(e) {}
+                var safePreset = ['light', 'dark', 'custom'].indexOf(preset) >= 0 ? preset : 'dark';
+                var safeColors = safePreset === 'custom'
+                    ? {
+                        bg: isValidHex(colors && colors.bg) ? colors.bg : standardThemes.dark.bg,
+                        text: isValidHex(colors && colors.text) ? colors.text : standardThemes.dark.text
+                    }
+                    : standardThemes[safePreset];
+                var root = document.documentElement;
+                root.setAttribute('data-theme', safePreset);
+                root.style.setProperty('--bg-color', safeColors.bg);
+                root.style.setProperty('--text-color', safeColors.text);
+                var meta = document.getElementById('theme-color-meta');
+                if (meta) meta.setAttribute('content', safeColors.bg);
+            } catch(e) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
         })();
     </script>
     <link rel="stylesheet" href="./css/normalize.css">
-    <link rel="stylesheet" href="./css/fonts.css">
-    <link rel="stylesheet" href="./css/styles.css">
+    <link rel="stylesheet" href="./css/fonts.css?v=20260924-5">
+    <link rel="stylesheet" href="./css/styles.css?v=20260924-3">
     <link rel="stylesheet" href="./css/library.css?v=20260713-3">
 </head>
 
@@ -106,7 +120,7 @@
         </div>
     </main>
     <div id="bottom-bar" class="bottom-bar" aria-hidden="true"></div>
-    <script type="module" src="./js/library.js?v=20260713-3"></script>
+    <script type="module" src="./js/library.js?v=20260924-4"></script>
 </body>
 
 </html>

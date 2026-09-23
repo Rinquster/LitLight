@@ -1,7 +1,7 @@
 // js/settings-manager.js
 
 import Utils from "./utils.js";
-import { DEFAULT_SETTINGS } from "./constants.js";
+import { DEFAULT_SETTINGS } from "./constants.js?v=20260924-2";
 
 class SettingsManager {
   constructor() {
@@ -36,6 +36,14 @@ class SettingsManager {
   setupControls() {
     const fontSelect = document.getElementById("font-family");
     if (fontSelect) {
+      // Сохранённого шрифта может уже не быть в списке — тогда шрифт по умолчанию.
+      const isAvailable = [...fontSelect.options].some(
+        (option) => option.value === this.settings.fontFamily,
+      );
+      if (!isAvailable) {
+        this.settings.fontFamily = DEFAULT_SETTINGS.fontFamily;
+        this.saveSettings();
+      }
       fontSelect.value = this.settings.fontFamily;
       fontSelect.addEventListener("change", (e) => {
         this.setFontFamily(e.target.value);
@@ -89,10 +97,11 @@ class SettingsManager {
     valueDisplay.textContent = formatValue(initialValue);
 
     const updateValue = (value) => {
-      const formatted = sliderId === "line-height" 
+      const formatted = sliderId === "line-height"
         ? parseFloat(value).toFixed(1)
         : formatValue(value);
       valueDisplay.textContent = formatted;
+      this.updateSliderFill(slider);
       onChange(value);
     };
 
@@ -106,10 +115,21 @@ class SettingsManager {
     updateValue(initialValue);
   }
 
+  // Закрашенная часть дорожки до бегунка: Chromium рисует её градиентом
+  // по --slider-percent, Firefox — через ::-moz-range-progress.
+  updateSliderFill(slider) {
+    const min = Number(slider.min);
+    const max = Number(slider.max);
+    const value = Number(slider.value);
+    const percent = max > min ? ((value - min) / (max - min)) * 100 : 0;
+    slider.style.setProperty("--slider-percent", `${Utils.clamp(percent, 0, 100)}%`);
+  }
+
   updateSliderValue(sliderId, value) {
     const slider = document.getElementById(sliderId);
     if (slider) {
       slider.value = value;
+      this.updateSliderFill(slider);
       const valueDisplay = document.getElementById(`${sliderId}-value`);
       if (valueDisplay) {
         if (sliderId === "line-height") {
@@ -219,7 +239,7 @@ class SettingsManager {
         font-family: '${fontFamily}', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       }
       
-      .settings-select, code, pre {
+      code, pre {
         font-family: 'SourceCodePro', '${fontFamily}', monospace;
       }
     `;

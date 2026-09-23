@@ -1,11 +1,11 @@
 // js/library.js
-import ThemeManager from "./theme-manager.js";
+import ThemeManager from "./theme-manager.js?v=20260924-3";
 import Utils from "./utils.js";
 import {
   AGE_GATE_CONFIRMED_KEY,
   AGE_GATE_CONFIRMED_TIMESTAMP,
   AGE_GATE_SESSION_DURATION,
-} from "./constants.js";
+} from "./constants.js?v=20260924-2";
 
 class LibraryApp {
   constructor() {
@@ -691,6 +691,10 @@ class LibraryApp {
   formatDate(dateString) {
     if (!dateString) return null;
 
+    // Известен только год («2006») — показываем год, а не выдуманное 01.01.
+    const yearOnly = String(dateString).trim();
+    if (/^\d{4}$/.test(yearOnly)) return yearOnly;
+
     try {
       const date = new Date(dateString);
       if (isNaN(date.getTime())) return dateString;
@@ -703,6 +707,14 @@ class LibraryApp {
     } catch {
       return dateString;
     }
+  }
+
+  // Объём произведения: «456 507 зн., 11,41 а.л.» (авторский лист — 40 000 знаков).
+  formatVolume(charCount) {
+    const chars = Math.max(0, Math.round(Number(charCount) || 0));
+    const grouped = String(chars).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    const sheets = (chars / 40000).toFixed(2).replace(".", ",");
+    return `${grouped} зн., ${sheets} а.л.`;
   }
 
   getStatusHtml(book) {
@@ -801,6 +813,10 @@ class LibraryApp {
       ? `<span class="book-date" title="Дата написания">📅 ${Utils.escapeHtml(formattedDate)}</span>`
       : "";
 
+    const volumeHtml = Number(book.charCount) > 0
+      ? `<span class="book-volume" title="Авторский лист — 40 000 печатных знаков">📄 ${Utils.escapeHtml(this.formatVolume(book.charCount))}</span>`
+      : "";
+
     const statusHtml = this.getStatusHtml(book);
     const progressHtml = this.getProgressHtml(book);
     const blockOverlay = isBlocked
@@ -825,6 +841,7 @@ class LibraryApp {
                     ${progressHtml}
                     ${dateHtml}
                     <span>📖 ${totalChapters || "?"} ${this.pluralizeChapters(totalChapters)}</span>
+                    ${volumeHtml}
                     ${book.hasMedia ? "<span>🎵 аудио</span>" : ""}
                     ${book.hasHints ? "<span>💡 подсказки</span>" : ""}
                 </div>
