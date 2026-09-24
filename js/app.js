@@ -3,7 +3,7 @@
 import Utils from "./utils.js";
 import ThemeManager from "./theme-manager.js?v=20260924-3";
 import SettingsManager from "./settings-manager.js?v=20260924-5";
-import BookLoader from "./book-loader.js?v=20260924-1";
+import BookLoader from "./book-loader.js?v=20260925-2";
 import MediaInjector from "./media-injector.js";
 import HintInjector from "./hint-injector.js?v=20260924-1";
 import ReadingProgressTracker from "./reading-progress-tracker.js?v=20260713-3";
@@ -251,6 +251,9 @@ class ReadingApp {
 
       this.progressTracker.startTracking(".reading-area");
 
+      // Названия всех глав — в фоне сразу после первой главы, а не только при открытии оглавления.
+      this.bookLoader.ensureChapterTitlesLoaded();
+
       this.isInitialized = true;
       console.log("✅ Reading App fully initialized!");
     } catch (error) {
@@ -423,6 +426,7 @@ class ReadingApp {
 
         this.bookLoader.currentChapter = chapterNumber;
         this.bookLoader.updateNavigationUI();
+        this.bookLoader.loadNeighborTitles(chapterNumber);
 
         document.querySelector(".reading-area")?.scrollTo(0, 0);
 

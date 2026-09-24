@@ -13,6 +13,9 @@ class BookLoader {
     this.hintRules = [];
     this.titlesLoaded = false;
     this.titleLoadingPromise = null;
+    this.titleRequests = new Map();
+    this.titleRetryTimer = null;
+    this.titleRetryAttempts = 0;
     this.defaultChapterFilenamePadding = 2;
     this.maxChapterFilenamePadding = 4;
   }
@@ -41,6 +44,7 @@ class BookLoader {
 
       this.createChapterNavigation();
       this.setupNavigation();
+      window.addEventListener("online", () => this.retryTitlesNow());
 
       this.titleLoadingPromise = null;
 
@@ -244,6 +248,7 @@ class BookLoader {
         chapter.resolvedFilename = filename;
         chapter.exists = true;
         chapter.attemptedFilenames = attemptedFilenames;
+        chapter.networkError = false;
 
         return { response, filename };
       } catch (error) {
@@ -253,6 +258,8 @@ class BookLoader {
 
     chapter.exists = false;
     chapter.attemptedFilenames = attemptedFilenames;
+    // Сбой сети — не доказательство, что главы нет: такую главу не выкидываем из списка.
+    chapter.networkError = Boolean(lastError);
 
     if (lastError) {
       console.warn(
@@ -296,11 +303,16 @@ class BookLoader {
     }
   }
 
+  // Название главы: строка; null — файла главы нет; undefined — не удалось из-за сети.
   async loadSingleChapterTitle(chapter) {
     try {
       const chapterResult = await this.fetchChapterResponse(chapter, {
         cache: "no-cache",
       });
+
+      if (!chapterResult && chapter.networkError) {
+        return undefined;
+      }
 
       if (!chapterResult) {
         console.warn(
@@ -334,45 +346,128 @@ class BookLoader {
         `⚠️ Error loading title for chapter ${chapter.number}:`,
         error,
       );
-      return null;
+      return undefined;
     }
   }
 
-  async loadChapterTitlesInBackground() {
-    console.log("🔄 Starting background title loading...");
-
-    let removedChapters = false;
-
-    for (const chapter of [...this.chapterFiles]) {
-      if (this.isTitleReallyLoaded(chapter.number)) {
-        continue;
-      }
-
-      const title = await this.loadSingleChapterTitle(chapter);
-
-      if (title === null) {
-        this.removeChapterFromList(chapter.number);
-        removedChapters = true;
-        continue;
-      }
-
-      this.chapterTitles[chapter.number] = title;
-      this.updateSingleNavItem(chapter.number, title);
-
-      await new Promise((resolve) => setTimeout(resolve, 30));
+  // Один запрос на главу, даже если название одновременно просят фон и кнопки «назад/вперёд».
+  loadTitle(chapter) {
+    if (!this.titleRequests.has(chapter.number)) {
+      const request = this.loadSingleChapterTitle(chapter).finally(() => {
+        this.titleRequests.delete(chapter.number);
+      });
+      this.titleRequests.set(chapter.number, request);
     }
+    return this.titleRequests.get(chapter.number);
+  }
 
-    if (removedChapters) {
+  // Применяет результат loadTitle; false — название не получено из-за сети.
+  applyTitle(chapter, title) {
+    if (title === undefined) return false;
+
+    if (title === null) {
+      if (!this.chapterFiles.includes(chapter)) return true;
+      this.removeChapterFromList(chapter.number);
       this.totalChapters = this.chapterFiles.length;
       this.rebuildChapterNavigation();
       this.updateNavigationUI();
       console.log(
         `🔄 Cleaned up chapter list, now ${this.totalChapters} chapters`,
       );
+      return true;
     }
 
-    this.titlesLoaded = true;
-    console.log("✅ All chapter titles loaded in background");
+    this.chapterTitles[chapter.number] = title;
+    this.updateSingleNavItem(chapter.number, title);
+    if (this.isNeighborOfCurrent(chapter.number)) {
+      this.updateNavigationUI();
+    }
+    return true;
+  }
+
+  getNeighborChapters(chapterNumber) {
+    const index = this.chapterFiles.findIndex((c) => c.number === chapterNumber);
+    if (index < 0) return [];
+    return [this.chapterFiles[index - 1], this.chapterFiles[index + 1]].filter(Boolean);
+  }
+
+  isNeighborOfCurrent(chapterNumber) {
+    return this.getNeighborChapters(this.currentChapter).some(
+      (chapter) => chapter.number === chapterNumber,
+    );
+  }
+
+  // Названия соседних глав — вне общей очереди: кнопкам «назад/вперёд»
+  // не нужно ждать, пока фоновая загрузка дойдёт до них по порядку.
+  async loadNeighborTitles(chapterNumber) {
+    for (let round = 0; round < 4; round++) {
+      if (chapterNumber !== this.currentChapter) return;
+
+      const pending = this.getNeighborChapters(chapterNumber).filter(
+        (chapter) => !this.isTitleReallyLoaded(chapter.number),
+      );
+      if (pending.length === 0) return;
+
+      const results = await Promise.all(
+        pending.map(async (chapter) => ({ chapter, title: await this.loadTitle(chapter) })),
+      );
+      for (const { chapter, title } of results) {
+        this.applyTitle(chapter, title);
+      }
+
+      // Если соседа не оказалось, соседом стала следующая глава — берём и её.
+      if (!results.some(({ title }) => title === null)) return;
+    }
+  }
+
+  async loadChapterTitlesInBackground() {
+    console.log("🔄 Starting background title loading...");
+
+    let skipped = false;
+
+    for (const chapter of [...this.chapterFiles]) {
+      if (!this.chapterFiles.includes(chapter)) continue;
+      if (this.isTitleReallyLoaded(chapter.number)) continue;
+
+      const title = await this.loadTitle(chapter);
+      if (!this.applyTitle(chapter, title)) skipped = true;
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+
+    // Названия, не полученные из-за сети, догружаются повторными проходами.
+    this.titlesLoaded = !skipped;
+    this.titleLoadingPromise = null;
+    if (skipped) {
+      this.scheduleTitleRetry();
+    } else {
+      this.titleRetryAttempts = 0;
+    }
+    console.log(
+      skipped
+        ? "⚠️ Some chapter titles were not loaded (network), will retry later"
+        : "✅ All chapter titles loaded in background",
+    );
+  }
+
+  // Повтор с нарастающей паузой: 2, 4, 8… секунд, не больше шести попыток подряд.
+  scheduleTitleRetry() {
+    if (this.titleRetryTimer || this.titleRetryAttempts >= 6) return;
+    this.titleRetryAttempts += 1;
+    const delay = Math.min(60000, 2000 * 2 ** (this.titleRetryAttempts - 1));
+    this.titleRetryTimer = setTimeout(() => {
+      this.titleRetryTimer = null;
+      this.ensureChapterTitlesLoaded();
+    }, delay);
+  }
+
+  // Сеть вернулась — догружаем сразу, не дожидаясь очередной паузы.
+  retryTitlesNow() {
+    clearTimeout(this.titleRetryTimer);
+    this.titleRetryTimer = null;
+    this.titleRetryAttempts = 0;
+    this.loadNeighborTitles(this.currentChapter);
+    this.ensureChapterTitlesLoaded();
   }
 
   ensureChapterTitlesLoaded() {
@@ -598,37 +693,24 @@ class BookLoader {
     const currentIndex = this.chapterFiles.findIndex(
       (c) => c.number === this.currentChapter,
     );
+    const prev = currentIndex > 0 ? this.chapterFiles[currentIndex - 1] : null;
+    const next =
+      currentIndex < this.chapterFiles.length - 1
+        ? this.chapterFiles[currentIndex + 1]
+        : null;
+    const titleOf = (number) =>
+      this.chapterTitles[number] ||
+      (number === 0 ? "Предисловие" : `Глава ${number}`);
 
-    if (prevBtn) {
-      prevBtn.disabled = currentIndex <= 0;
-
-      if (currentIndex > 0) {
-        const prevNumber = this.chapterFiles[currentIndex - 1].number;
-        const prevTitle =
-          this.chapterTitles[prevNumber] ||
-          (prevNumber === 0 ? "Предисловие" : `Глава ${prevNumber}`);
-        // безопасная вставка названия через textContent, сохраняя иконку
-        prevBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg>`;
-        prevBtn.appendChild(document.createTextNode(" " + prevTitle));
-      } else {
-        prevBtn.textContent = "Начало";
-      }
-    }
-
-    if (nextBtn) {
-      nextBtn.disabled = currentIndex >= this.chapterFiles.length - 1;
-
-      if (currentIndex < this.chapterFiles.length - 1) {
-        const nextNumber = this.chapterFiles[currentIndex + 1].number;
-        const nextTitle =
-          this.chapterTitles[nextNumber] || `Глава ${nextNumber}`;
-        nextBtn.innerHTML = ``;
-        nextBtn.appendChild(document.createTextNode(nextTitle + " "));
-        nextBtn.innerHTML += `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>`;
-      } else {
-        nextBtn.textContent = "Конец";
-      }
-    }
+    // Меняется только текст подписи: замена содержимого кнопки под курсором съедает клик.
+    const setButton = (button, disabled, label) => {
+      if (!button) return;
+      if (button.disabled !== disabled) button.disabled = disabled;
+      const labelNode = button.querySelector(".nav-btn-label");
+      if (labelNode && labelNode.textContent !== label) labelNode.textContent = label;
+    };
+    setButton(prevBtn, !prev, prev ? titleOf(prev.number) : "Начало");
+    setButton(nextBtn, !next, next ? titleOf(next.number) : "Конец");
 
     if (breadcrumb) {
       let breadcrumbText;
@@ -637,7 +719,7 @@ class BookLoader {
       } else {
         breadcrumbText = `Глава ${this.currentChapter}`;
       }
-      breadcrumb.textContent = breadcrumbText;
+      if (breadcrumb.textContent !== breadcrumbText) breadcrumb.textContent = breadcrumbText;
     }
 
     const navElement = document.getElementById("chapter-nav");
